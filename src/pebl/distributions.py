@@ -1,17 +1,28 @@
 import math
 from util import ensure_list
 from numpy import *
+from itertools import izip
 
 class Distribution(object):
     def __init__(self, pebldata): pass 
     def loglikelihood(self): pass
 
 #############################################################################################################
-class ConditionalProbabilityTable(object):
+class MultinomialDistribution(Distribution):
+    __title__ = "Multinomial Distribution"
+    lnfactorial_cache = array([])
+
     def __init__(self, pebldata):
+        self.data = pebldata
+        
+        max_count = pebldata.numsamples + max(pebldata.arities)
+        if len(self.lnfactorial_cache) < max_count:
+            self.prefill_lnfactorial_cache(max_count)
+        
+        # create a Conditional Probability Table
         qi = int(product(pebldata.arities[1:]))
         self.counts = zeros((qi, pebldata.arities[0] + 1), dtype=int)
-
+        
         if pebldata.numvariables is 1:
             self.offsets = [0]
         else:
@@ -19,54 +30,37 @@ class ConditionalProbabilityTable(object):
             offsets = multiply.accumulate(multipliers)
             self.offsets = concatenate(([0], offsets))
 
-        self.add_counts(pebldata)
+        # add data to cpt
+        self._change_counts(pebldata, 1)
 
     def _change_counts(self, pebldata, change=1):
         indices = dot(pebldata, self.offsets)
         child_values = pebldata[:,0]
 
-        for j,k in zip(indices, child_values):
+        for j,k in izip(indices, child_values):
             self.counts[j][k] += change
             self.counts[j][-1] += change
 
-    def add_counts(self, pebldata):
-        return self._change_counts(pebldata, 1)
+    def replace_data(self, add, remove):
+        add_index = sum(i*o for i,o in izip(add, self.offsets))
+        remove_index = sum(i*o for i,o in izip(remove, self.offsets))
 
-    def add_count(self, datum):
-        self._change_counts(array([datum]), 1)          
-    
-    def remove_count(self, datum):
-        self._change_counts(array([datum]), -1)
+        self.counts[add_index][add[0]] += 1
+        self.counts[add_index][-1] += 1
 
-class MultinomialDistribution(Distribution):
-    __title__ = "Multinomial Distribution"
-    lnfactorial_cache = array([])
-
-    def __init__(self, pebldata):
-        max_count = pebldata.numsamples + max(pebldata.arities)
-        if len(self.lnfactorial_cache) < max_count:
-            self.prefill_lnfactorial_cache(max_count)
-        
-        self.arities = pebldata.arities
-        self.cpt = ConditionalProbabilityTable(pebldata)
-
-    def add_data(self, datarow):
-        self.cpt.add_count(datarow)
-
-    def remove_data(self, datarow):
-        self.cpt.remove_count(datarow)
+        self.counts[remove_index][remove[0]] -= 1
+        self.counts[remove_index][-1] -= 1
 
     def loglikelihood(self):
         lnfac = self.lnfactorial_cache
-        counts = self.cpt.counts
+        counts = self.counts
 
-        ri = self.arities[0]
-        qi = int(product(self.arities[1:]))
+        ri = self.data.arities[0]
         
         result = sum( 
-              lnfac[ri-1] 
-            - lnfac[counts[:,-1] + ri -1] 
-            + sum(lnfac[counts[:,:-1]], axis=1) 
+              lnfac[ri-1]                           # log((ri-1)!) 
+            - lnfac[counts[:,-1] + ri -1]           # log((Nij + ri -1)!)
+            + sum(lnfac[counts[:,:-1]], axis=1)     # log(Product(Nijk!)) == Sum(log(Nijk!))
         )
 
         return result

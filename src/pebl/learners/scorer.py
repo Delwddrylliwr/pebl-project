@@ -1,20 +1,29 @@
 from pebl.util import *
 from numpy import *
 from pebl import data, distributions
+import random as stdlib_random
 
 random.seed()
 
-class BasicScorer(object):
-    def __init__(self, network_, pebldata, prior_=None):
+class CyclicNetworkException(Exception): pass
+
+class Scorer(object):
+    def __init__(self, network_, pebldata, prior_=None, subscorer=None):
         self.network = network_
         self.data = pebldata
         self.prior = prior_
-        self.cached_localscores = {}
+        
+        self.datavars = range(self.data.numvariables)
+        self.score = None
+        self.localscore_cache = {}
 
-    def _globalscore_from_localscores(self, localscores):
+        if self.data.has_missingvals:
+            self.subscorer = subscorer or MissingDataScorer
+
+    def _globalscore(self, localscores):
         return sum(localscores)
     
-    def _create_distribution(self, node):
+    def _cpd(self, node):
         parents = self.network.edges.parents(node)
         datasubset = self.data.subset(
             variables = [node]+parents, 
@@ -22,103 +31,142 @@ class BasicScorer(object):
             ignore_names = True
         )
 
-        # TODO: when we suport more than one distribution, we'll need a way to specify which type to use
-        #       maybe some config parameter..
         return distributions.MultinomialDistribution(datasubset)
 
-    def _score_node(self, node):
-        index = self.index(node)
-        score = self.cached_localscores.get(index, None)
+    def _localscore(self, node):
+        _index = lambda node: tuple([node] + self.network.edges.parents(node))
+
+        index = _index(node)
+        score = self.localscore_cache.get(index, None)
 
         if not score:
-            score = self._create_distribution(node).loglikelihood()
-            self.cached_localscores[index] = score
+            score = self._cpd(node).loglikelihood()
+            self.localscore_cache[index] = score
 
         return score
     
-    def index(self, node):
-        return tuple([node] + self.network.edges.parents(node))
+    def _score_network_core(self):
+        # use a subscorer if one exists
+        if self.subscorer:
+            return subscorer(self.network, self.data, self.prior).score_network()
+        
+        self.score = self._globalscore(self._localscore(node) for node in self.datavars)
+        return self.score
 
-    def score_network(self):
-        localscores = (self._score_node(node) for node in xrange(self.data.numvariables))
-        return globalscore_from_localscores(localscores)
+    def score_network(self, net=None):
+        self.network = net or self.network
+        return self._score_network_core()
 
-class ManagedScorer(BasicScorer):
-    def __init__(self, network_, pebldata, prior_=None):
-        super(ManagedScorer, self).__init__(network_, pebldata, prior_)
+    def set_network(self, net):  self.network = net
+    def randomize_network(self): self.network.randomize()
+    def clear_network(self):     self.network.clear()
+
+
+class SmartScorer(Scorer):
+    def __init__(self, network_, pebldata, prior_=None, subscorer=None):
+        super(SmartScorer, self).__init__(network_, pebldata, prior_. subscorer)
+
+        self.dirtynodes = set(self.datavars)
         self.localscores = zeros((self.data.numvariables), dtype=float)
-        self.dirtynodes = [i for i in xrange(self.data.numvariables)]
         self.last_alteration = ()
-        self.cached_localscores = {}
-        self.saved_localscores = None
-        self.score = None
+        self.saved_state = None
+ 
+        # set appropriate _determine_dirtynodes() method
+        if self.data.has_missingvals:
+            self._determine_dirtynodes = self._determine_dirtynodes_with_hidden_nodes
 
     def _backup_state(self):
-        self.saved_localscores = self.localscores[self.dirtynodes].copy()
-        self.saved_localscores_indices = self.dirtynodes
-        self.saved_score = self.score
+        self.saved_state = (
+            self.score,                     # saved score
+            self.localscores.copy()         # saved localscores
+        )
 
     def _restore_state(self):
-        self.localscores[self.saved_localscores_indices] = self.saved_localscores
-        self.score = self.saved_score
-
-    def alter_network(self, add=[], remove=[]):
-        """Alter the network while retaining the ability to *quickly* undo the changes."""
-
-        add = ensure_list(add)
-        remove = ensure_list(remove)
+        if self.saved_state:
+            self.score, self.localscores = self.saved_state
         
-        for edge in add: 
-            self.network.edges.add(edge)    
-        for edge in remove: 
-            self.network.edges.remove(edge)
+        self.saved_state = None
 
-        if not self.network.is_acyclic():
-            for edge in add: 
-                self.network.edges.remove(edge)
-            for edge in remove: 
-                self.network.edges.add(edge)
-            return False
-        
-        self.last_alteration = (add, remove)    
-        self._backup_state()
-        
-        # Edge src-->dest was added or removed. either way, dest's parentset changed and is thus dirty.
-        self.dirtynodes.extend(unzip(add+remove, 1))
-        return True
+    def _localscore(self, node):
+        localscore = super(SmartScorer, self)._localscore(node)
+        self.localscores[node] = localscore
+        return localscore
 
-    def restore_network(self):
-        """Restore the network to the state before the last call to alter_network()."""
+    def _score_network_core(self):
+        # use a subscorer if one exists
+        if self.subscorer:
+            return subscorer(self.network, self.data, self.prior).score_network(dirtynodes=self.dirtynodes, localscores=self.localscores)
 
-        added, removed = self.last_alteration
-        self._restore_state()
-        self.dirtynodes = []
-
-        for edge in removed: 
-            self.network.edges.add(edge)
-        for edge in added: 
-            self.network.edges.remove(edge)
-
-    def score_network(self):
-        # no nodes are dirty, so just return last score.
+        # if no nodes are dirty, just return last score.
         if len(self.dirtynodes) == 0:
             return self.score
 
-        # update localscore for dirtynodes, then calculate globalscore.
-        for node in unique(self.dirtynodes):
-            self.localscores[node] = self._score_node(node)
+        # update localscore for dirtynodes, then re-calculate globalscore
+        for node in self.dirtynodes:
+            self.localscores[node] = self._localscore(node)
         
-        self.dirtynodes = []
-        self.score = self._globalscore_from_localscores(self.localscores)
+        self.dirtynodes = set()
+        self.score = self._globalscore(self.localscores)
         return self.score
+    
+    def score_network(self, net=None):
+        if net:
+            add = [edge for edge in net.edges if edge not in self.network.edges]
+            remove = [edge for edge in self.network.edges if edge not in net.edges]
+        else:
+            add = remove = []
+        
+        return self.alter_and_score_network(add, remove)
+    
+    def _determine_dirtynodes(self, add, remove):
+        return set(unzip(add+remove, 1))
+
+    def _determine_dirtynodes_with_hidden_nodes(self, add, remove):
+        return set(self.datavars)
+
+    def alter_and_score_network(self, add=[], remove=[]):
+        """Alter the network while retaining the ability to *quickly* undo the changes."""
+
+        self.network.edges.add_many(add)    
+        self.network.edges.remove_many(remove)
+
+        if not self.network.is_acyclic():
+            self.network.edges.remove_many(add)
+            self.network.edges.add_many(remove)
+            raise CyclicNetworkException()
+        
+        # Edge src-->dest was added or removed. either way, dest's parentset changed and is thus dirty.
+        self.dirtynodes = self._determine_dirtynodes(add, remove)
+        self.last_alteration = (add, remove)
+        
+        self._backup_state()
+        self.score = self._score_network_core()
+        
+        return self.score
+
+    def restore_network(self):
+        """Undo the last alter_and_score_network()"""
+
+        added, removed = self.network_alterations
+        self._restore_state()
+        
+        self.dirtynodes = set()
+        self.network_alterations = ()
+        
+        self.network.edges.add_many(removed)
+        self.network.edges.remove_many(added)
 
     def randomize_network(self):
         self.network.randomize()
-        self.dirtynodes = [i for i in xrange(self.data.numvariables)]
+        self.dirtynodes = set(self.datavars)
     
     def set_network(self, net):
         self.network = net
-        self.dirtynodes = [i for i in xrange(self.data.numvariables)]
+        self.dirtynodes = set(self.datavars)
+
+    def clear_network(self):
+        self.network.clear()
+        self.dirtynodes = set(self.datavars)
 
 
 class GibbsSamplerState(object):
@@ -138,78 +186,208 @@ class GibbsSamplerState(object):
     def __init__(self, avgscore, numscores, assignedvals):
         autoassign(self, locals())
 
-class MissingDataManagedScorer(ManagedScorer):
+    @property
+    def scoresum(self):
+        """Log sum of scores."""
+        return self.avgscore + log(self.numscores)
+
+
+class MissingDataScorer(Scorer):
     """WITH MISSING DATA."""
     gibbs_burnin = 10
-
-    def _score_network(self):
-        # update localscore for data_dirtynodes, then calculate globalscore.
-        for node in unique(self.data_dirtynodes):
-            self.localscores[node] = self._score_node(node)
-
-        self.data_dirtynodes = []
-        return self._globalscore_from_localscores(self.localscores)
-
-    def _backup_state(self):
-        self.saved_score = self.score
-
-    def _restore_state(self):
-        self.score = self.saved_score
     
-    def _score_node(self, node):
-        if not self.sflist[node]:
-            self.sflist[node] = self._create_distribution(node)
+    def __init__(self, network_, pebldata, prior_=None, dirtynodes=None, localscores=None):
+        super(MissingDataScorer, self).__init__(network_, pebldata, prior_)
         
-        return self.sflist[node].loglikelihood()
+        self.cpds = [None for node in self.datavars]
+        self.data_dirtynodes = set(self.datavars)
 
-    def _alter_data(self, row, col, value, interventions):
+        self.dirtynodes = dirtynodes or set(self.datavars)
+        self.localscores = localscores or zeros((self.data.numvariables), dtype=float)
+
+        self.subscorer = None
+
+    def _localscore(self, node):
+        self.cpds[node] = self.cpds[node] or self._cpd(node)
+        return self.cpds[node].loglikelihood()
+
+    def _score_network_core(self):
+        # update localscore for data_dirtynodes, then calculate globalscore.
+        for node in self.data_dirtynodes:
+            self.localscores[node] = self._localscore(node)
+
+        self.data_dirtynodes = set()
+        self.score = self._globalscore(self.localscores)
+        return self.score
+
+    def _alter_data(self, row, col, value):
         oldrow = self.data[row].copy()
         self.data[row][col] = value
 
-        # A column in data corresponds to a node in network.
-        altered_node = col
-        affected_nodes = [altered_node] + \
-                         self.network.edges.parents(altered_node) + \
-                         self.network.edges.children(altered_node)
-        self.data_dirtynodes.extend(affected_nodes)
+        affected_nodes = set([col] + self.network.edges.children(col))
+        self.data_dirtynodes.update(affected_nodes)
 
-        for node in unique(affected_nodes):
+        for node in affected_nodes:
             datacols = [node] + self.network.edges.parents(node)
-            if node not in interventions[row]:
-                self.sflist[node].remove_data(oldrow[datacols])
-                self.sflist[node].add_data(self.data[row][datacols])
+            if not self.data.interventions[row][node]:
+                self.cpds[node].replace_data(self.data[row][datacols], oldrow[datacols])
 
-    def _score_after_altering_data(self, row, col, value, interventions):
-        self._alter_data(row, col, value, interventions)
-        return self._score_network()
+    def _alter_data_and_score(self, row, col, value):
+        self._alter_data(row, col, value)
+        return self._score_network_core()
 
-    def score_network(self, stopping_criteria=None, gibbs_state=None, save_state=False):
-        # rescore if ANY nodes are dirty.
-        if len(self.dirtynodes) == 0:
-            return self.score
+    def _calculate_score(self, chosenscores, gibbs_state):
+        # discard the burnin period scores and average the rest
+        burnin_period = self.gibbs_burnin * len(self.data.indices_of_missingvals)
 
-        # network was altered.. so reset sflist and data_dirtynodes
-        self.sflist = [None for i in xrange(self.data.numvariables)]
-        self.data_dirtynodes = range(self.data.numvariables)
+        if gibbs_state:
+            # resuming from a previous gibbs run. so, no burnin required.
+            scoresum = logadd(logsum(chosenscores), gibbs_state.scoresum)
+            numscores = len(chosenscores) + gibbs_state.numscores
+        elif len(chosenscores) > burnin_period:
+            # not resuming from previous gibbs run. so remove scores from burnin period.
+            nonburn_scores = chosenscores[burnin_period:]
+            scoresum = logsum(nonburn_scores)
+            numscores = len(nonburn_scores)
+        else:
+            # this occurs when gibbs iterations were less than burnin period. so use last score.
+            scoresum = chosenscores[-1]
+            numscores = 1
+        
+        score = scoresum - log(numscores)
+        return score, numscores
 
-        # create some useful lists and vars
-        interventions = [self.data.interventions_for_sample(s) for s in xrange(self.data.numsamples)]
-        missingvals = self.data.indices_of_missingvals
+    def score_network(self, net=None, stopping_criteria=None, gibbs_state=None, save_state=False):
+        self.network = net or self.network
+
+        # initialize cpds and data_dirtynodes
+        self.cpds = [None for i in xrange(self.data.numvariables)]
+        self.data_dirtynodes = set(self.datavars)
+        
+        # create some useful lists and local variables
+        missingvals = [(row,col) for row,col in self.data.indices_of_missingvals if col in self.dirtynodes]
         num_missingvals = len(missingvals)
         arities = self.data.arities
+        chosenscores = []
+
+        # assign values to missing data 
+        if gibbs_state:
+            assignedvals = gibbs_state.assignedvals
+        else:
+            assignedvals = [stdlib_random.randint(0, arities[col]-1) for row,col in missingvals]
+
+        self.data[unzip(missingvals)] = assignedvals
+
+        # score once to set cpds and localscores
+        self._score_network_core()
+
+        # default stopping criteria is to sample for N^2 iterations (N == number of missing vals)
+        stopping_criteria = stopping_criteria or (lambda scores,iterations,N: iterations >= num_missingvals**2)
+
+        # Gibbs Sampling: 
+        # For each missing value:
+        #    1) score net with each possible value (based on node's arity)
+        #    2) using a probability wheel, sample a value from the possible values
+        iterations = 0
+        while not stopping_criteria(chosenscores, iterations, num_missingvals):
+            for row,col in missingvals:
+                scores = [self._alter_data_and_score(row, col, val) for val in xrange(arities[col])]
+                chosenval = logscale_probwheel(scores)
+                self._alter_data(row, col, chosenval)
+                chosenscores.append(scores[chosenval])
+            
+            iterations += num_missingvals
+
+        chosenscores = array(chosenscores)
+        self.score, numscores = self._calculate_score(chosenscores, gibbs_state)
+
+        self.chosenscores = chosenscores
+
+        # save state of gibbs sampler?
+        if save_state:
+            self.gibbs_state = GibbsSamplerState(avgscore=self.score, numscores=numscores, assignedvals=self.data[unzip(missingvals)].tolist())
+
+        return self.score
+
+
+class MissingDataExactScorer(MissingDataScorer):
+    def score_network(self, net=None):
+        self.network = net or self.network
+        
+        # initialize cpds and data_dirtynodes
+        self.cpds = [None for i in xrange(self.data.numvariables)]
+        self.data_dirtynodes = set(range(self.data.numvariables))
+
+        # create some useful lists and local variables
+        missingvals = [(row,col) for row,col in self.data.indices_of_missingvals if col in self.dirtynodes]
+        num_missingvals = len(missingvals)
+        possiblevals = [range(self.data.arities[col]) for row,col in missingvals]
+
+        # score once to set cpds and localscores
+        self._score_network_core()
+        
+        scores = []
+        info = []
+        for assignedvals in cartesian_product(possiblevals):
+            # set missingvals to assignedvals
+            for (row,col),val in zip(missingvals, assignedvals):
+                self._alter_data(row, col, val)
+
+            score = self._score_network_core()
+            scores.append(score)
+            info.append((assignedvals, entropy_of_list(assignedvals), self.localscores.tolist(), score))
+
+        self.score = logsum(scores) - log(len(scores))
+        self.scores = scores
+        self.info = info
+
+        return self.score
+
+class MaximumEntropyHiddenVariableScorer(MissingDataScorer):
+    def _maximum_entropy_assignment(self, var):
+        numeach = self.data.numsamples/self.data.arities[var]
+        assignments = flatten(([val]*numeach for val in xrange(self.data.arities[var])))
+        for i in xrange(self.data.numsamples - len(assignments)):
+            assignments.append(i)
+
+        random.shuffle(assignments)
+        return assignments
+
+    def _swap_data(self, row1, col1, row2, col2):
+        val1 = self.data[row1][col1]
+        val2 = self.data[row2][col2]
+
+        self._alter_data(row1, col1, val2)
+        self._alter_data(row2, col2, val1)
+        
+        return (row1, col1, val1, row2, col2, val2)
+    
+    def _undo_swap(self, row1, col1, val1, row2, col2, val2):
+        self._alter_data(row1, col1, val1)
+        self._alter_data(row2, col2, val2) 
+
+    def score_network(self, stopping_criteria=None, gibbs_state=None, save_state=False):
+        # network was altered.. so reset cpds and data_dirtynodes
+        self.cpds = [None for i in xrange(self.data.numvariables)]
+        self.data_dirtynodes = set(range(self.data.numvariables))
+
+        # create some useful lists and vars
+        numsamples = self.data.numsamples
+        hiddenvars = [var for var in self.data.hidden_variables if var in self.dirtynodes]
+        num_missingvals = len(hiddenvars)*numsamples
         chosenscores = []
 
         # set missing values using last assigned values from previous gibbs run or random values based on node arity
         if gibbs_state:
             assignedvals = gibbs_state.assignedvals
+            self.data[unzip(self.data.indices_of_missingvals)] = assignedvals
         else:
-            assignedvals = (random.random_integers(0, arities[col]-1, 1) for row,col in missingvals)
-        
-        for (row,col),val in zip(missingvals, assignedvals):
-            self.data[row][col] = val
+            assignedvals = [self._maximum_entropy_assignment(var) for var in hiddenvars]
+            for var, assignments in zip(hiddenvars, assignedvals):
+                self.data[:,var] = assignments
 
-        # score to initialize sflist, etc.
-        self._score_network()
+        # score to initialize cpds, etc.
+        self._score_network_core()
 
         # default stopping criteria is to sample for N^2 iterations (N == number of missing vals)
         stopping_criteria = stopping_criteria or (lambda scores,iterations,N: iterations >= num_missingvals**2)
@@ -220,43 +398,32 @@ class MissingDataManagedScorer(ManagedScorer):
         #    2) using a probability wheel, sample a value from the possible values (and set it in the dataset)
         iterations = 0
         while not stopping_criteria(chosenscores, iterations, num_missingvals):
-            for row,col in missingvals:
-                scores = [self._score_after_altering_data(row, col, val, interventions) for val in xrange(arities[col])]
-                chosenval = logscale_probwheel(scores)
-                self._alter_data(row, col, chosenval, interventions)
-                chosenscores.append(scores[chosenval])
-            
-            iterations += num_missingvals
+            for var in hiddenvars:  
+                for sample in xrange(numsamples):
+                    score0 = self._score_network_core()
+                    swap = self._swap_data(sample, var, random.randint(numsamples-1), var)
+                    score1 = self._score_network_core() 
+                    chosenval = logscale_probwheel([score0, score1])
+
+                    if chosenval == 0:
+                        # undo swap and select old_score
+                        self._undo_swap(*swap)
+                        chosenscores.append(score0)
+                    else:
+                        chosenscores.append(score1)
+
+                iterations += numsamples
 
         chosenscores = array(chosenscores)
-        
-        # discard the burnin period scores and average the rest
-        burnin_period = self.gibbs_burnin * num_missingvals
-        if gibbs_state:
-            # resuming from a previous gibbs run. so, no burnin required.. so, use all scores.
-            scoresum = sum(chosenscores) + (gibbs_state.avgscore * gibbs_state.numscores)
-            numscores = len(chosenscores) + gibbs_state.numscores
-        elif len(chosenscores) > burnin_period:
-            # not resuming from previous gibbs run. so remove scores from burnin period.
-            nonburn_scores = chosenscores[burnin_period:]
-            scoresum = sum(nonburn_scores)
-            numscores = len(nonburn_scores)
-        else:
-            # this occurs when gibbs iterations were less than burnin period. so use last score.
-            scoresum = chosenscores[-1]
-            numscores = 1
-        
-        # set self.score and self.sampled_scores
-        self.sampled_scores = chosenscores
-        self.score = scoresum/numscores
+        self.score, numscores = self._calculate_score(chosenscores, gibbs_state)
+
+        self.chosenscores = chosenscores
 
         # save state of gibbs sampler?
-        # unzip transforms [(a,b), (c,d), (e,f)] into [[a,c,e], [b,d,f])
-        # So unzip(missingvals) returns missing value indices as a list of rows and list of columns
-        # self.data[[row1, row2], [col1, col2]] returns data[row1][col1] and data[row2][col2] 
         if save_state:
             self.gibbs_state = GibbsSamplerState(avgscore=self.score, numscores=numscores, assignedvals=self.data[unzip(missingvals)].tolist())
         
         return self.score
 
-defaultType = ManagedScorer
+
+

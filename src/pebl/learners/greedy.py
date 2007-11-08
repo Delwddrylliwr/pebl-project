@@ -35,16 +35,15 @@ class GreedyLearner(Learner):
         self.stats = GreedyLearnerStatistics()
         self.result = result_ or result.LearnerResult(self)
         
-        scorertype = cond(self.data.has_missingvals, scorer.MissingDataManagedScorer, scorer.ManagedScorer)
+        scorertype = scorer.TransactionalScorer if not self.data.has_missingvals else scorer.MissingDataScorer
         self.scorer = scorertype(self.network, self.data)
-
+        
         self.result.start_run(self)
-
         while not stopping_criteria(self.stats):
             self._run_without_restarts(stopping_criteria)
         
         self.result.stop_run()
-    
+
     def _run_without_restarts(self, stopping_criteria):
         self.stats.restarts += 1
         self.scorer.randomize_network()
@@ -57,11 +56,10 @@ class GreedyLearner(Learner):
             self.stats.iterations += 1
 
             try:
-                self._alter_network_randomly()
+                curscore = self._alter_network_randomly_and_score()
             except CannotAlterNetworkException:
                 return
             
-            curscore = self.scorer.score_network()
             self.result.add_network(self.scorer.network, curscore)
 
             if curscore < self.stats.best_score:

@@ -25,28 +25,6 @@ def cond(condition, expr1, expr2):
         return expr2
 
 
-def partial(func, *leftargs):
-    def f(*args):
-        return func(*(leftargs + args))
-    return f
-
-# curry is a better partial. 
-def curry(f,x):
-    def curried_function(*args, **kw):
-        return f(*((x,)+args),**kw)
-    return curried_function
-
-                
-def create_counter(start=0):
-    def f():
-        i = start
-        while True:
-             yield i
-             i += 1
-    
-    return f().next
-
-
 def flatten(seq):
   lst = []
   for el in seq:
@@ -81,7 +59,7 @@ def rescaleAndExponentiateLogValues(lst):
 _LogZero = 1.0e-100
 _MinLogExp = math.log(_LogZero);
 
-def logAdd(x, y):
+def logadd(x, y):
     if x < y:
         temp = x
         x = y
@@ -94,25 +72,8 @@ def logAdd(x, y):
     else:
         return logProb
 
-def logSum(seq, start=0):
-    return reduce(logAdd, seq, start)                                                                         
-
-
-def makeQuestionPngs(question_x, question_y, jobdir):
-    writeQuestionPng(pydot.graph_from_edges([(question_x, question_y)], directed=True), jobdir, "q1.png")
-    writeQuestionPng(pydot.graph_from_edges([(question_y, question_x)], directed=True), jobdir, "q2.png")
-
-
-def writeQuestionPng(graph, jobdir, filename):
-    graph.set_size("1.21, .9")
-    graph.set_dpi("128")
-    graph.set_ratio("fill")
-
-    for node in graph.node_list:
-        node.set_style("filled")
-        node.set_fillcolor("#6699cc")
-
-    graph.write_png(os.path.join(jobdir, filename), prog="dot")
+def logsum(seq):
+    return reduce(logadd, seq)                                                                         
 
 ## from webpy (webpy.org)
 def autoassign(self, locals):
@@ -148,13 +109,13 @@ def nestediter(lst1, lst2):
 
 
 
-def exhaustive_list(list_of_lists):
-    """Given a list of lists, yield all possible combinations.
+def cartesian_product(list_of_lists):
+    """Given n lists, generate all n-tuple combinations.
 
-    >>> list(exhaustive_list([[0,1], [0,1,"foo"]]))
+    >>> list(cartesian_product([[0,1], [0,1,"foo"]]))
      [[0, 0], [0, 1], [0, 'foo'], [1, 0], [1, 1], [1, 'foo']]
 
-     >>> list(exhaustive_list([[0,1], [0,1], [0,1]]))
+     >>> list(cartesian_product([[0,1], [0,1], [0,1]]))
      [[0, 0, 0],
      [0, 0, 1],
      [0, 1, 0],
@@ -172,8 +133,8 @@ def exhaustive_list(list_of_lists):
             yield (val,)
     else:
         for val in head:
-            for val2 in exhaustive_list(rest):
-                yield flatten((val, val2))
+            for val2 in cartesian_product(rest):
+                yield (val,) + val2
 
 
 def logscale_probwheel(logvalues):
@@ -203,4 +164,16 @@ def probwheel(values, scores):
     # should never reach here.. but might due to rounding errors.
     return values[-1]
 
+
+def entropy_of_list(lst):
+    unique_values = numpy.unique(lst)
+    unique_counts = numpy.array([float(len([i for i in lst if i == unique_val])) for unique_val in unique_values])
+    total = numpy.sum(unique_counts)
+    probs = unique_counts/total
+
+    # remove probabilities==0 because log(0) = -Inf and causes problems.
+    # This is ok because plog(p) ==0*log(0) == 0 so removing these doesn't affect the final sum.
+    probs = probs[probs>0] 
+
+    return sum(-probs*numpy.log(probs))
 

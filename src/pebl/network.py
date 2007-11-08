@@ -513,4 +513,3 @@ def from_nodes_and_edgelist(nodes, edgelist):
     net.edges = edgelist
     return net
 
-

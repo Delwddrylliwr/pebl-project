@@ -5,6 +5,7 @@ test = None
 from pebl.learners import scorer
 from pebl import data, network
 import os
+import copy
 
 TESTDATA2 = """0	2	X	1	2
 1	2	X	1	1
@@ -78,7 +79,7 @@ class TestBasicScorer:
         self.scorer._score_node(0)
         assert self.scorer.index(0) in self.scorer.cached_localscores.keys(), "Checking cache."
 
-class TestManagedScorer:
+class TestTransactionalScorer:
     def setUp(self):
         self.data, self.net = _create_data_and_net()
         self.scorer = scorer.ManagedScorer(self.net, self.data)
@@ -100,7 +101,6 @@ class TestManagedScorer:
         #  VS
         # scorer(net1).alter_network() then, scorer.score_network()
         # scores should be the same.
-        import copy 
         
         self.scorer.alter_network(add=(2,3))
         score1 = self.scorer.score_network()
@@ -125,12 +125,17 @@ class TestManagedScorer:
         # score net, make changes, SCORE, undo changes, score. 
         # 1st and last scores should be same.
         score1 = self.scorer.score_network()
+        localscores1 = self.scorer.localscores.copy()
+        
         self.scorer.alter_network(add=[(2,3), (1,2)], remove=(1,0))
         self.scorer.score_network()
         self.scorer.restore_network()
+        
         score2 = self.scorer.score_network()
+        localscores2 = self.scorer.localscores.copy()
 
         assert score1 == score2, "Alter followed by score and restore should leave score unchanged."
+        assert all(localscores1 == localscores2), "Alter followed by score and restore should leave localscores unchanged."
 
 
     def test_scoring(self):
@@ -149,7 +154,7 @@ class TestManagedScorer:
         assert score1 == score2, "Long series of alters and restores."
 
 
-class TestMissingDataManagedScorer:
+class TestMissingDataScorer:
     def setUp(self):
         # write out test data (don't want to depend on external data files)
         f = open("testdata2.txt", 'w')
@@ -161,7 +166,7 @@ class TestMissingDataManagedScorer:
         self.net = network.fromdata(self.data)
         a,b,c,d,e = 0,1,2,3,4
         self.net.edges.add_many([(a,c), (b,c), (c,d), (c,e)])
-        self.scorer = scorer.MissingDataManagedScorer(self.net, self.data)
+        self.scorer = scorer.MissingDataScorer(self.net, self.data)
 
     def tearDown(self):
         try:
@@ -174,13 +179,12 @@ class TestMissingDataManagedScorer:
         # ensure that correct one scores better. (can't check for exact score)
         
         # score network: {a,b}->c->{d,e}
-        score1 = self.scorer.score_network(lambda scores,iterations,N: iterations >= 5*N**2)
+        score1 = self.scorer.score_network(lambda scores,iterations,N: iterations >= 10*N**2)
 
         # score network: {a,b}->{d,e} c
-        self.net.edges.clear()
         a,b,c,d,e = 0,1,2,3,4
-        self.scorer.alter_network(add=[(a,d), (a,e), (b,d), (b,e)])
-        score2 = self.scorer.score_network(lambda scores,iterations,N: iterations >= 5*N**2)
+        self.scorer.alter_network(remove=[(a,c), (b,c), (c,d), (c,e)], add=[(a,d), (a,e), (b,d), (b,e)])
+        score2 = self.scorer.score_network(lambda scores,iterations,N: iterations >= 10*N**2)
 
         # score1 should be better than score2
         assert score1 > score2, "Gibbs sampling can find goodhidden node."

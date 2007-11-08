@@ -116,10 +116,8 @@ class PeblData(ndarray):
 
         """
 
-        if not variables: 
-            variables = range(self.numvariables)
-        if not samples: 
-            samples = range(self.numsamples)
+        variables = variables or range(self.numvariables)
+        samples = samples or range(self.numsamples)
 
         sub = self[samples][:,variables]
         
@@ -129,8 +127,8 @@ class PeblData(ndarray):
             sub.arities = self.arities[variables]
             
             if not ignore_names:
-                sub.variablenames = self.variablenames[variables]
-                sub.samplenames = self.samplenames[samples]
+                sub.variablenames = self.variablenames[variables] if hasattr(self, 'variablenames') else []
+                sub.samplenames = self.samplenames[samples] if hasattr(self, 'samplenames') else []
 
         return sub
     
@@ -166,12 +164,16 @@ class PeblData(ndarray):
         mv = self.missingvals[sample]
         return len(mv[mv == True])
 
+    @property
     def latent_variables(self):
         """Return the list of latent variables."""
 
         return [v for v in range(self.numvariables) 
                     if self.num_missingvals_for_variable(v) is self.numsamples
                ]
+    
+    hidden_variables = latent_variables
+
 
     def interventions_for_sample(self, sample):
         """Return list of variables intervened upon in the given sample."""

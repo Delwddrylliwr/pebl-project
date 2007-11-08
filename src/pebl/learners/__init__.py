@@ -37,7 +37,6 @@ class Learner(object):
                 add,remove = None, (endnode, startnode)
             else:
                 # start_node and end_node unconnected, so connect them
-                #print("### Adding edge: %s -> %s" % (start_node.id, end_node.id))
                 add,remove =  (startnode, endnode), None
 
             if self.scorer.alter_network(add=add, remove=remove):
