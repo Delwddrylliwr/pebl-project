@@ -321,7 +321,7 @@ class MissingDataExactScorer(MissingDataScorer):
         # create some useful lists and local variables
         missingvals = transpose(where(self.data.missing[:,self.dirtynodes]==True))
         num_missingvals = len(missingvals)
-        possiblevals = [range(self.data.arities[col]) for row,col in missingvals]
+        possiblevals = [range(self.data.variables[col].arity) for row,col in missingvals]
 
         # score once to set cpds and localscores
         self._score_network_core()
@@ -349,7 +349,7 @@ class MaximumEntropyMissingDataScorer(MissingDataScorer):
         it has a maximum entropy discretization.
         """
 
-        arity = self.data.arities[var]
+        arity = self.data.variables[var].arity
         numsamples = self.data.samples.size
 
         missingvals = self.data.missing[:,var]
