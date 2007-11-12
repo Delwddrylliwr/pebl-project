@@ -35,8 +35,7 @@ class GreedyLearner(Learner):
         self.stats = GreedyLearnerStatistics()
         self.result = result_ or result.LearnerResult(self)
         
-        scorertype = scorer.TransactionalScorer if not self.data.has_missingvals else scorer.MissingDataScorer
-        self.scorer = scorertype(self.network, self.data)
+        self.scorer = scorer.SmartScorer(self.network, self.data)
         
         self.result.start_run(self)
         while not stopping_criteria(self.stats):

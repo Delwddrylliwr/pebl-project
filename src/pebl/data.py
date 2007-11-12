@@ -1,321 +1,108 @@
 """A Class for representing datasets and functions to create and manipulate them."""
 
 import re
-from numpy import ndarray, array, unique, nonzero, zeros, searchsorted
+import numpy as N
+from itertools import groupby
 from util import *
 
-class PeblData(ndarray):
-    """A numpy.ndarray subclass for storing data and metadata.
+class ParsingError(Exception): pass
 
-    Data is accessed as a 2D matrix with samples in rows (dimension 1) and variables in columns (dimension 2).
-    PeblData instances can also maintain the following metadata:
+class Annotation(Struct):
+    def __repr__(self):
+        name = getattr(self, 'name', self.id)
+        return "<%s: %s>" % (self.__class__.__name__,  name)
 
-        - sample names
-        - variable names
-        - variable arities
-        - missing values
-        - the intervened variable(s) for each sample
+class Variable(Annotation): pass
+class Sample(Annotation): pass
 
-    Although a PeblData instance can be used anywhere a numpy array can, not all operations on them are completely
-    intuitive.  Data slicing using numpy methods will work but the metadata in the resulting subset will be invalid.
-    If you wish to use the metadata in a data subset, use the L{subset} method instead.
+class PeblData(object):
+    def __init__(self, observations, missing, interventions, variables, samples):
+        self.observations = observations
+        self.missing = missing
+        self.interventions = interventions
+        self.variables = variables
+        self.samples = samples
 
-    For PeblData method arguments and return values, samples and variables are represented by their index.
-    Use L{samples_byname} and L{variables_byname} to retrieve indices given name or regular expression.
+        if not hasattr(self.variables[0], 'arity'):
+            self._guess_arities()
 
-    """
-    
-    # The list of data structures added to ndarray by pebl.
-    # If you modify this list, modify__new__ and  subset() to handle these.
-    _pebl_metadata = ['interventions', 'missingvals', 'arities', 'samplenames', 'variablenames']
-    
-    # PeblData takes precendence over other array types
-    __array_priority__ = 10
+    def subset(self, variables=None, samples=None):
+        """Return a subset of the dataset."""
 
-    def __new__(cls, *args, **kwargs):
-        """This method should never be called directly."""
+        variables = variables if variables is not None else range(self.variables.size)
+        samples = samples if samples is not None else range(self.samples.size)
 
-        # no_metadata means do not waste time initializing metadata (because it
-        # will be re-initialized or copied from another PeblData instance).. 
-        no_metadata = kwargs.pop("no_metadata", False)
-        pd =  ndarray.__new__(cls, *args, **kwargs)
-
-        if not no_metadata:
-            pd.interventions = zeros(pd.shape, dtype=bool)
-            pd.missingvals = zeros(pd.shape, dtype=bool)
-            pd.arities = zeros(pd.shape[1], dtype=int)
-            pd.samplenames = zeros(pd.shape[0], dtype="S1")
-            pd.variablenames = zeros(pd.shape[1], dtype="S1")
-
-        return pd
-
-    def __array_wrap__(self, array):
-        pd = PeblData(shape=array.shape, buffer=array, dtype=array.dtype, no_metadata=True)
-        self._copy_pebl_metadata_to(pd)
-        return pd
-    
-    def _copy_pebl_metadata_to(self, pd):
-        """Copy metadata from self to PeblData instance."""
-
-        for attr in PeblData._pebl_metadata:
-            if hasattr(self, attr):
-                setattr(pd, attr, getattr(self, attr))
-
-    def _copy_pebl_metadata_from(self, pd):
-        """Copy metadata from PeblData instance to self."""
-
-        for attr in PeblData._pebl_metadata:
-            if hasattr(pd, attr):
-                setattr(self, attr, getattr(pd, attr))
-    
-
-    def _calculate_arities(self):
-        """Calculate the arity (domain,rank) of variables in the dataset."""
-
-        self.arities = array([len(unique(self[:,varnum]).flatten()) for varnum in range(self.numvariables)])
-
-    def _list_indices(self, list_, names, namelike=""):
-        """Search a list using exact names or regular expressions."""
-        
-        # list_ can be a numpy array so 'not list_' is not same as 'list_ == None'
-        if list_ == None or len(list_) == 0:
-            return []
-
-        # let's work with regular lists instead of ndarray
-        list_ = list_.tolist()
-        
-        # if namelike was provided, names is ignored..
-        if namelike:
-            # use regular expression to find matching indices
-            regexp = re.compile(namelike)
-            indices = [i for i,name in enumerate(list_) if regexp.search(name)]
-            return indices
-
-        namelist = ensure_list(names)
-        try:
-            indices = [list_.index(name) for name in namelist]
-        except:
-            raise ValueError("Name not in list.")
-        
-        return cond(isinstance(names, list), indices, indices[0])
-
-    def subset(self, variables=[], samples=[], ignore_all_metadata=False, ignore_names=False):
-        """Return a subset of the dataset.
-        
-        @param variables: list of variable indices.
-        @param samples: list of sample indices.
-
-        If quick is False, subset contains a subset of metadata also. 
-        If quick is True, subset's metadata will be invalid and should not be used. 
-
-        Sample usage:
-            - pd.subset(variables=1)
-            - pd.subset(variables=[1,4,5], samples=[0,2])
-            - pd.subset(variables=pd.variables_byname("gene x"))
-            - pd.subset(samples=pd.samples_byname("mouse somite.*"))
-
-        """
-
-        variables = variables or range(self.numvariables)
-        samples = samples or range(self.numsamples)
-
-        sub = self[samples][:,variables]
-        
-        if not ignore_all_metadata:
-            sub.missingvals = self.missingvals[samples][:,variables]
-            sub.interventions = self.interventions[samples][:,variables]
-            sub.arities = self.arities[variables]
-            
-            if not ignore_names:
-                sub.variablenames = self.variablenames[variables] if hasattr(self, 'variablenames') else []
-                sub.samplenames = self.samplenames[samples] if hasattr(self, 'samplenames') else []
-
-        return sub
-    
-    def variables_byname(self, names=[], namelike=""):
-        """Return list of variables (as variable indices) matching exact name or regular expression.
-
-        @param names: list of variable names to match.
-        @param namelike: regular expression to use for matching variable names.
-
-        """
-
-        return self._list_indices(self.variablenames, names, namelike)
-    
-    def samples_byname(self, names=[], namelike=""):
-        """Return list of samples (as sample indices) matching exact name or regular expression.
-
-        @param names: list of sample names to match.
-        @param namelike: regular expression to use for matching sample names.
-
-        """
-
-        return self._list_indices(self.samplenames, names, namelike)
-
-    def num_missingvals_for_variable(self, var):
-        """Return the number of missing values for given variable."""
-
-        mv = self.missingvals[:,var]
-        return len(mv[mv == True])
-
-    def num_missingvals_for_sample(self, sample):
-        """Return the number of missing values for given sample."""
-
-        mv = self.missingvals[sample]
-        return len(mv[mv == True])
+        return PeblData(
+            self.observations[N.ix_(samples,variables)],
+            self.missing[N.ix_(samples,variables)],
+            self.interventions[N.ix_(samples,variables)],
+            self.variables[variables],
+            self.samples[samples]
+        )
 
     @property
-    def latent_variables(self):
-        """Return the list of latent variables."""
+    def shape(self):
+        return self.observations.shape
 
-        return [v for v in range(self.numvariables) 
-                    if self.num_missingvals_for_variable(v) is self.numsamples
-               ]
-    
-    hidden_variables = latent_variables
+    @property
+    def arities(self):
+        return [v.arity for v in self.variables]
 
+    def _1d_where(self, arr, predicate):
+        return [i for i,a in enumerate(arr) if predicate(a)]
 
-    def interventions_for_sample(self, sample):
-        """Return list of variables intervened upon in the given sample."""
+    def variables_where(self, predicate):
+        return self._1d_where(self.variables, predicate)
 
-        return [i for i,intervention in enumerate(self.interventions[sample]) if intervention]
-   
-    def noninterventions_for_sample(self, sample):
-        """Return list of variables *not* intervened upon in the given sample."""
+    def samples_where(self, predicate):
+        return self._1d_where(self.samples, predicate)
 
-        return [i for i,intervention in enumerate(self.interventions[sample]) if not intervention]
+    def _guess_arities(self):
+        """Tries to guess arity of variables by counting the number of unique observations."""
 
-    def interventions_for_variable(self, variable):
-        """Return list of samples in which the given variable was intervened upon."""
+        for var in self.variables:
+            var.arity = N.unique(self.observations[:,var]).size
 
-        return [i for i,intervention in enumerate(self.interventions[:,variable]) if intervention]
-
-    def noninterventions_for_variable(self, variable):
-        """Return list of samples in whcih the gien variable was *not* intervened upon."""
-        return [i for i,intervention in enumerate(self.interventions[:,variable]) if not intervention]
-    
-    def tofile(self, filename):
+    def _NOT_READY_tofile(self, filename):
         """Write the data and metadata to file in a tab-delimited format."""
-        stringrep = self.tostring()
-
-        f = open(filename, 'w')
-        f.write(stringrep)
+        
+        f = file(filename, 'w')
+        f.write(self.tostring())
         f.close()
     
-    def tostring(self, linesep='\n'):
+    def _NOT_READY_tostring(self, linesep='\n'):
         """Return the data and metadata as a String."""
 
-        def getcell(row, col):
-            missing = self.missingvals[row][col]
-            intervention = self.interventions[row][col]
-            val = cond(missing, "X", str(self[row][col]))
-            val += cond(intervention, "!", "")
+        def format_item(row, col):
+            val = "X" if self.missing[row,col] else self.observations[row,col]
+            val += "!" if self.interventions[row,col] else ''
             return val
         
         lines = []
-        
-        if self.variablenames and len(self.variablenames) > 0 and len(self.variablenames[0]) > 0:
-            # variablenames exists, is a non-empty list and the first element is not just ""
-            lines.append("\t".join(self.variablenames))
-            
-        for rownum in xrange(self.numsamples):
-            line = [getcell(rownum, colnum) for colnum in xrange(self.numvariables)]
-            lines.append("\t".join(line))
-        
+        # STEPS:
+        #   * determine annotations by inspecting variables.dtype, samples.dtype
+        #   * add control lines based on the annotations
+        #   * ass data using format_item
+
         return linesep.join(lines)
 
-    @property 
-    def indices_of_missingvals(self):
-        """The indices (as (sample,variable)) for missing values."""
-
-        rows, cols = nonzero(self.missingvals)
-        return [(row,col) for row,col in zip(rows,cols)]
-   
-    @property
-    def has_missingvals(self):
-        """Boolean property specifying whether the dataset has any missing values."""
-
-        return self.missingvals.any()
-
-    @property
-    def numsamples(self):
-        """The number of samples in the dataset."""
-
-        return self.shape[0]
-        
-    @property
-    def numvariables(self):
-        """The number of variables in the dataset."""
-
-        return self.shape[1]
-
-
-## This implementation calculates bin edges by trying to make bins equal sized.. 
-## 
-## input:  [3,7,4,4,4,5]
-## output: [0,1,0,0,0,1]
-##
-## Note: All 4s discretize to 0.. which makes bin sizes unequal..                                                 
-def discretize_variables(pd, includevars=None, excludevars=[], numbins=3):
-
-    attrs = Struct()
-    pd._copy_pebl_metadata_to(attrs)
-    pd2 = pd.copy()
-    
-    includevars = ensure_list(includevars or range(pd.numvariables))
-    binsize = pd.numsamples//numbins
-
-    for var in includevars:
-        if var not in excludevars:
-            row = pd2[:,var]
-            argsorted = row.argsort()
-            binedges = [row[argsorted[binsize*b - 1]] for b in range(numbins)][1:]
-            pd2[:,var] = searchsorted(binedges, row)
-
-    # if discreitizing all variables, set array datatype to byte
-    if len(includevars) == pd2.numvariables and not excludevars:
-        pd2 = pd2.astype('byte')
-
-    pd2._copy_pebl_metadata_from(attrs)
-    pd2._calculate_arities()
-    return pd2
-
-
-def discretize_variables_in_groups(pd, samplegroups, includevars=None, excludevars=[], numbins=3):
-    attrs = Struct()
-    pd._copy_pebl_metadata_to(attrs)
-    pd2 = pd.copy()
-    includevars = ensure_list(includevars or range(pd.numvariables))
-    
-    for samplegroup in samplegroups:
-        pd2[samplegroup] = discretize_variables(pd[samplegroup], includevars, excludevars, numbins)
-
-    # if discreitizing all variables, set array datatype to byte
-    if len(includevars) == pd.numvariables and not excludevars:
-        pd2 = pd2.astype('byte')
-
-    pd2._copy_pebl_metadata_from(attrs)
-    pd2._calculate_arities()
-    return pd2
-
-
-def fromfile(filename, header=False, sampleheader=False):
-    f = open(filename)
-    data_obj = fromstring(f.read(), header, sampleheader)
-    f.close()
-    return data_obj
-
-
-def fromstring(stringrep, header=False, sampleheader=False):
-    fieldsep = "\t"
-
-    # function to process each data item in file
-    def process_item(item):
+example_data = """
+%variable.name[str]=foo\tbar\tfoobar\tbaz\tfoobaz
+%variable.arity[int]=2\t3\t3\t2\t3
+%sample.adult_sample[bool]=0\t1\t1\t0
+0\t1\t0\t1\t0
+1\t0\t2\tx\t0!
+2\t1\t0!\t1!\tx
+!0\tX\tx\t0\t1
+"""
+     
+def fromstring(stringrep):
+    # parse a data item (examples: '5' '2.5', 'X', '5!')
+    def parse_dataitem(item):
         item = item.strip()
 
         intervention = False
         missing = False
-
         if item[0] == "!":
             intervention = True
             item = item[1:]
@@ -334,62 +121,113 @@ def fromstring(stringrep, header=False, sampleheader=False):
             try:
                 value = float(item)
             except:
-                print "Error parsing value: '%s'" % item
-                raise ValueError
+                raise ValueError("Error parsing value: '%s'. It doesn't seem to be an int or a float." % item)
 
-        return (value, intervention, missing)
+        return (value, missing, intervention)
 
-
-    def process_row(row):
-        items = row.split(fieldsep)
-        samplename = ''
-        if sampleheader:
-            samplename = items[0]
-            items = items[1:]
+    metadata_re = re.compile("([^\.]*\.)?(.*)\[(.*)\]=(.*)$")
+    bool_converter = lambda x: bool(int(x))
+    # parse metadata line
+    def parse_metadata(line):
+        """Parses metadata annotations like '%variable.arity[int]=2\t3\t2\t2'"""
         
-        row = [process_item(item) for item in items]
-        values, interventions, missingvals = unzip(row)
+        match = metadata_re.match(line[1:])  # line[1:] to remove the %
+        if not match:
+            raise ParsingError("Error parsing metadata line: %s" % line)
 
-        return (values, interventions, missingvals, samplename)
-
-
-    # ------------------------------------------------------
+        annotfor, name, datatype, values = match.groups()
+        annotfor = annotfor[:-1]  # remove the trailing period from annotfor
+        
+        try:
+            converter = bool_converter if datatype == 'bool' else eval(datatype) 
+        except NameError:
+            raise ParsingError(
+                "Invalid datatype (%s) for annotation (%s.%s)." % (datatype, annotfor, name)
+            )
    
-    # split on all known line seperators.
-    rows = re.split("\r\n|\r|\n", stringrep)
-    rows = [row for row in rows if row] # remove blank lines
+        values = [converter(v) for v in re.split(',|\t', values)]
+        return (annotfor, name, values)
     
-    # is the first line a header line with column names?
-    varnames = None
-    if header:
-        varnames = rows.pop(0).split(fieldsep)
-        if sampleheader:
-            # first column of all rows is name of sample, so remove it..
-            varnames = varnames[1:]
+    # create array of variable or sample annotations
+    def annotations(annotation_type, metadata, length):
+        names = [m[1] for m in metadata]
+        values = [m[2] for m in metadata]
+
+        if 'id' not in names:
+            names.append('id')
+            values.append(range(length))
+
+        valuesets = unzip(values)  
+
+        return array([annotation_type(**dict((n,v) for n,v in zip(names, values))) for values in valuesets])
+
+    # -------------------------------------------------------------------------------------------------
+
+    # split on all known line seperators, then ignore blank and comment lines
+    lines = (l.strip() for l in stringrep.splitlines() if l)
+    lines = (l for l in lines if not l.startswith('#'))
+    
+    # separate and then parse metadata and data lines 
+    linetype = lambda line: 'metadata' if line.startswith('%') else 'data'
+    for group,grouplines in groupby(lines, linetype):
+        if group is 'metadata':
+            metadata = [parse_metadata(l) for l in grouplines]
+        else:
+            data_ = N.array([[parse_dataitem(i) for i in l.split('\t')] for l in grouplines])
+            # data_ is a 3D array where the inner dimension is over (values, missing, interventions)
+            # transpose(2,0,1) makes the inner dimension the outer one
+            observations, missing, interventions = data_.transpose(2,0,1)
+
+    # create variable and sample annotations from the metadata
+    variables = annotations(Variable, [m for m in metadata if m[0] == 'variable'], observations.shape[1])
+    samples = annotations(Sample, [m for m in metadata if m[0] == 'sample'], observations.shape[0])
+
+    # pack observations into bytes if possible (they're integers and < 255)
+    observations_dtype = 'byte' if (observations.dtype.kind is 'i' and observations.max() < 255) \
+                                else observations.dtype
    
-    data, interventions, missingvals, samplenames = unzip([process_row(row) for row in rows])
+    # x.astype() returns a casted *copy* of x
+    # returning copies of observations, missing and interventions ensures that
+    # they're contiguous in memory (should speedup future calculations)
+    return PeblData(
+        observations.astype(observations_dtype),
+        missing.astype(bool),
+        interventions.astype(bool), 
+        variables, 
+        samples
+    )
 
-    # convert data to numpy array
-    da = array(data)
-    pd = PeblData(shape=da.shape, buffer=da, dtype=da.dtype, no_metadata=True)
 
-    # convert to array of bytes (if possible).
-    # this will be possible for discrete data (which should be a common case)
-    if pd.dtype.kind is 'i' and pd.max() < 255:
-         pd = pd.astype('byte')
-   
-    # set PeblData metadata
-    pd.variablenames = cond(header, 
-                            array(varnames), 
-                            array(["Var %s" % i for i in xrange(pd.numvariables)]))
-    pd.samplenames = cond(sampleheader, 
-                          array(samplenames), 
-                          array(["Sample %s" % i for i in xrange(pd.numsamples)]))
-    pd.interventions = array(interventions).astype(bool)
-    pd.missingvals = array(missingvals).astype(bool)
+# This implementation calculates bin edges by trying to make bins equal sized.. 
+# 
+# input:  [3,7,4,4,4,5]
+# output: [0,1,0,0,0,1]
+#
+# Note: All 4s discretize to 0.. which makes bin sizes unequal..                                                 
+def discretize_variables(data_, includevars=None, excludevars=[], numbins=3):
+    newdata = copy.deepcopy(data_)
+    includevars = ensure_list(includevars or range(len(newdata.variables)))
+    binsize = len(newdata.samples)//numbins
 
-    # calculate arities
-    pd._calculate_arities()
-    return pd
+    vars = (var for var in includevars if var not in excludevars)
+    for var in vars:
+        row = newdata.observations[:,var]
+        argsorted = row.argsort()
+        binedges = [row[argsorted[binsize*b - 1]] for b in range(numbins)][1:]
+        newdata.observations[:,var] = N.searchsorted(binedges, row)
+        newdata.variables[var].arity = numbins
 
+    return newdata
+
+def discretize_variables_in_groups(data_, samplegroups, includevars=None, excludevars=[], numbins=3):
+    newdata = copy.deepcopy(data_)
+
+    includevars = ensure_list(includevars or range(len(newdata.variables)))
+    
+    for samplegroup in samplegroups:
+        newdata.observations[samplegroup] = newdata.discretize_variables(
+                                                newdata.observations[samplegroup], 
+                                                includevars, excludevars, numbins)
+
+    return newdata
 

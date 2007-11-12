@@ -14,16 +14,17 @@ class MultinomialDistribution(Distribution):
 
     def __init__(self, pebldata):
         self.data = pebldata
-        
-        max_count = pebldata.numsamples + max(pebldata.arities)
+        arities = pebldata.arities
+
+        max_count = pebldata.samples.size + max(arities)
         if len(self.lnfactorial_cache) < max_count:
             self.prefill_lnfactorial_cache(max_count)
         
         # create a Conditional Probability Table
-        qi = int(product(pebldata.arities[1:]))
-        self.counts = zeros((qi, pebldata.arities[0] + 1), dtype=int)
+        qi = int(product(arities[1:]))
+        self.counts = zeros((qi, arities[0] + 1), dtype=int)
         
-        if pebldata.numvariables is 1:
+        if pebldata.variables.size is 1:
             self.offsets = [0]
         else:
             multipliers = concatenate(([1], pebldata.arities[1:-1]))

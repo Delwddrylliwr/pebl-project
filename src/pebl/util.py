@@ -7,8 +7,7 @@ import os.path
 
 class Struct(object):
     def __init__(self, **kwargs):
-        for k,v in kwargs.items():
-            setattr(self, k, v)
+        self.__dict__.update(kwargs)
 
 def ensure_list(c):
     if isinstance(c, list):

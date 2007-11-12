@@ -21,9 +21,12 @@ class Learner(object):
         self.prior = prior_
         self.__dict__.update(kw)
 
+    def _alter_network_randomly_and_score(self):
+        self._alter_network_randomly()
+        return self.scorer.score_network()
 
     def _alter_network_randomly(self):
-        n_nodes = self.data.numvariables
+        n_nodes = self.data.variables.size
 
         # continue making changes and undoing them till we get an acyclic network
         for i in xrange(100):
@@ -38,9 +41,11 @@ class Learner(object):
             else:
                 # start_node and end_node unconnected, so connect them
                 add,remove =  (startnode, endnode), None
-
-            if self.scorer.alter_network(add=add, remove=remove):
-               return                 
+            
+            try:
+                score = self.scorer.alter_and_score_network(add=add, remove=remove)
+            except:
+                continue
 
         # Could not find a valid network after 100 attempts  
         raise CannotAlterNetworkException() 

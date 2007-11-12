@@ -250,61 +250,13 @@ class MatrixEdgeList(EdgeList):
         return self.adjacency_matrix.__hash__() == other.adjacency_matrix.__hash__()
 
 
-class NodeList(list):
-    def add(self, node):
-        if getattr(self,' __finalized__', False):
-            raise Exception("Canot add or remove nodes after a network's nodelist has been finalized.")
-
-        list.append(self, node)
-
-    def remove(self, node):
-        if getattr(self,' __finalized__', False):
-            raise Exception("Canot add or remove nodes after a network's nodelist has been finalized.")
-        
-        list.remove(self, node)
-
-    def byname(self, names=[], namelike=""):
-        if namelike:
-            regexp = re.compile(namelike)
-            return [n for n in self if regexp.search(n.name)]
-        
-        namelist = ensure_list(names)
-        nodes = [n for n in self if n.name in namelist]
-
-        # if no nodes found, return empty list
-        if not nodes:
-            return []
-
-        # return list or single item depending on what was passed in.
-        return cond(isinstance(names, list), nodes, nodes[0])
-
-    @property
-    def num_hiddennodes(self):
-        return len([1 for node in self if node.hidden])
-
-    def __getitem__(self, key):
-        if isinstance(key, slice):
-            return NodeList(list.__getitem__(self, key))
-        
-        return list.__getitem__(self, key)
-
-    def __getslice__(self, i, j):
-        return NodeList(list.__getslice__(self, i, j))
-    
-
 class Network(object):
     """ A network is essentially a collection of edges between nodes.
     
     """
     
-    def __init__(self):
-        self.nodes = NodeList()
-        self.edges = MatrixEdgeList()
-
-    # Cannot add/remove nodes after this
-    # Clears all edges
-    def finalize_nodelist(self):
-        self.nodes.__finalized__ = True
+    def __init__(self, nodes):
+        self.nodes = nodes
         self.edges = MatrixEdgeList(len(self.nodes))
 
     def is_acyclic__eigval_implementation(self):
@@ -350,10 +302,6 @@ class Network(object):
     # default implementation for is_acyclic()
     is_acyclic = is_acyclic__eigval_implementation
 
-    @property
-    def node_ids(self):
-        return range(len(self.nodes))
-
     def randomize__naive_implementation(self):
         n_nodes = len(self.nodes)
         density = 1.0/n_nodes
@@ -388,14 +336,11 @@ class Network(object):
         dot2 = os.path.join(tempdir, "2.dot")
         self.as_dotfile(dot1)
 
-        # I tried to use subprocess like a good programmer but it wouldn't work for me :(
-        #args = [dotpath, "-Tdot", "-Gratio=fill", "-Gdpi=60", "-Gfill=10,10", "-o%s" % dot2, dot1]
-        #subprocess.call(args, shell=True)
         os.system("%s -Tdot -Gratio=fill -Gdpi=60 -Gfill=10,10 %s > %s" % (dotpath, dot1, dot2))
         dotgraph = pydot.graph_from_dot_file(dot2)
-        
-        for peblnode,dotnode in zip(self.nodes, dotgraph.get_node_list()):
-            peblnode.position = [int(i) for i in dotnode.get_pos().split(',')]
+      
+        nodes = (n for n in dotgraph.get_node_list() if n.get_pos())
+        self.node_positions = [[int(i) for i in node.get_pos().split(',')] for node in nodes] 
 
     layout = layout_using_dot
 
@@ -403,18 +348,20 @@ class Network(object):
         return ";".join([",".join([str(node) for node in edge]) for edge in list(self.edges)])
         
     def as_dotstring(self):
+        nodename = lambda n: getattr(n, 'name', n.id)
+
         str = "digraph G {\n"
         for node in self.nodes:
-            str += "\t\"%s\";\n" % node.name
+            str += "\t\"%s\";\n" % nodename(node)
 
         for (src,dest) in self.edges:
-            str += "\t\"%s\" -> \"%s\";\n" % (self.nodes[src].name, self.nodes[dest].name)
+            str += "\t\"%s\" -> \"%s\";\n" % (nodename(self.nodes[src]), nodename(self.nodes[dest]))
         str += "}\n"
         
         return str
 
     def as_dotfile(self, filename):
-        f = open(filename, 'w')
+        f = file(filename, 'w')
         f.write(self.as_dotstring())
         f.close()
 
@@ -434,79 +381,14 @@ class Network(object):
         g = decorator(g)
         g.write_png(filename, prog="dot")
         
-
-
-class Node(object):
-    """
-    Nodes represent variables in the dataset.
-
-    Since PEBL is focused on structure learning of bayesian networks, the data
-    is primary over networks.  Nodes are lightweight structs used merely to hold
-    some metadata about each variable in the dataset.
-
-    """
-
-    def __init__(self, id, name=None, distribution=distributions.MultinomialDistribution, arity=0, annotations={}, hidden=False):
-        """ 
-        Create a node object.
-
-        id is an integer and correponds to the column number of the data for this node.
-        """
-
-        self.id = id
-        self.name = name or "%s" % id
-        self.distribution = distribution
-        self.annotations = annotations
-        self.name = name or "%s" % self.id
-        self.arity = arity
-        self.hidden = hidden
-        self.position = (0,0)
-
-class Edge(object):
-    """
-    An Edge is just a tuple of source node, destination node and some metadata.
-    
-    Edges can be typed although this is not currently used anywhere in PEBL.
-    Edges can also hold a dictionary of annotations.
-    
-    """
-    
-    def __init__(self, src, dest, type_=None, annotations={}):
-        """
-        Creates an Edge object.
-
-        src and dest can be Node objects or integers (node ids).
-        Internally, they are simply stored as integers.
-
-        """
-
-        self.src = nodeid(src)
-        self.dest = nodeid(dest)
-        self.type = type_
-        self.annotations = annotations
-
-
 ### functions
-def fromdata(pebldata):
-    net = Network()
-    numsamples = pebldata.numsamples
-
-    for i,arity in enumerate(pebldata.arities):
-        hidden = pebldata.num_missingvals_for_variable(i) == numsamples
-        net.nodes.add(Node(id=i, name=pebldata.variablenames[i], arity=arity, hidden=hidden))
-
-    net.finalize_nodelist()
-
+def fromdata(data_):
+    net = Network(data_.variables)
     return net
 
 def from_nodes_and_edgelist(nodes, edgelist):
-    net = Network()
+    net = Network(nodes)
     
-    for node in nodes:
-        net.nodes.add(node)
-    
-    net.finalize_nodelist()
-
     if isinstance(edgelist, ndarray):
         edgelist = MatrixEdgeList(adjacency_matrix=edgelist)
 

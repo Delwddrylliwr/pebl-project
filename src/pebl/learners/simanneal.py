@@ -30,9 +30,7 @@ class SimulatedAnnealingLearner(Learner):
         self.stats = SALearnerStatistics(starting_temp, delta_temp, max_iterations_at_temp)
         self.result =  result_ or result.LearnerResult(self)
         
-        scorertype = cond(self.data.has_missingvals, scorer.MissingDataManagedScorer, scorer.ManagedScorer)
-        self.scorer = scorertype(self.network, self.data)
-
+        self.scorer = scorer.SmartScorer(self.network, self.data)
         self.result.start_run(self)
 
         self.scorer.randomize_network()

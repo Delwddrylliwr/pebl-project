@@ -13,25 +13,22 @@ class Scorer(object):
         self.data = pebldata
         self.prior = prior_
         
-        self.datavars = range(self.data.numvariables)
+        self.datavars = range(self.data.variables.size)
         self.score = None
         self.localscore_cache = {}
+        self.subscorer = None
 
-        if self.data.has_missingvals:
+        if self.data.missing.any():
             self.subscorer = subscorer or MissingDataScorer
 
     def _globalscore(self, localscores):
         return sum(localscores)
     
     def _cpd(self, node):
-        parents = self.network.edges.parents(node)
-        datasubset = self.data.subset(
-            variables = [node]+parents, 
-            samples = self.data.noninterventions_for_variable(node),
-            ignore_names = True
-        )
-
-        return distributions.MultinomialDistribution(datasubset)
+        return distributions.MultinomialDistribution(
+            self.data.subset(
+                [node] + self.network.edges.parents(node),            # variables: node and its parents
+                where(self.data.interventions[:,node] == False)[0]))  # samples: those w/o interventions on node
 
     def _localscore(self, node):
         _index = lambda node: tuple([node] + self.network.edges.parents(node))
@@ -64,15 +61,15 @@ class Scorer(object):
 
 class SmartScorer(Scorer):
     def __init__(self, network_, pebldata, prior_=None, subscorer=None):
-        super(SmartScorer, self).__init__(network_, pebldata, prior_. subscorer)
+        super(SmartScorer, self).__init__(network_, pebldata, prior_, subscorer)
 
         self.dirtynodes = set(self.datavars)
-        self.localscores = zeros((self.data.numvariables), dtype=float)
+        self.localscores = zeros((self.data.variables.size), dtype=float)
         self.last_alteration = ()
         self.saved_state = None
  
         # set appropriate _determine_dirtynodes() method
-        if self.data.has_missingvals:
+        if self.data.missing.any():
             self._determine_dirtynodes = self._determine_dirtynodes_with_hidden_nodes
 
     def _backup_state(self):
@@ -203,7 +200,7 @@ class MissingDataScorer(Scorer):
         self.data_dirtynodes = set(self.datavars)
 
         self.dirtynodes = dirtynodes or set(self.datavars)
-        self.localscores = localscores or zeros((self.data.numvariables), dtype=float)
+        self.localscores = localscores or zeros((self.data.variables.size), dtype=float)
 
         self.subscorer = None
 
@@ -221,16 +218,16 @@ class MissingDataScorer(Scorer):
         return self.score
 
     def _alter_data(self, row, col, value):
-        oldrow = self.data[row].copy()
-        self.data[row][col] = value
+        oldrow = self.data.observations[row].copy()
+        self.data.observations[row,col] = value
 
         affected_nodes = set([col] + self.network.edges.children(col))
         self.data_dirtynodes.update(affected_nodes)
 
         for node in affected_nodes:
             datacols = [node] + self.network.edges.parents(node)
-            if not self.data.interventions[row][node]:
-                self.cpds[node].replace_data(self.data[row][datacols], oldrow[datacols])
+            if not self.data.interventions[row,node]:
+                self.cpds[node].replace_data(self.data.observations[row][datacols], oldrow[datacols])
 
     def _alter_data_and_score(self, row, col, value):
         self._alter_data(row, col, value)
@@ -238,7 +235,7 @@ class MissingDataScorer(Scorer):
 
     def _calculate_score(self, chosenscores, gibbs_state):
         # discard the burnin period scores and average the rest
-        burnin_period = self.gibbs_burnin * len(self.data.indices_of_missingvals)
+        burnin_period = self.gibbs_burnin * self.data.missing[self.data.missing==True].size
 
         if gibbs_state:
             # resuming from a previous gibbs run. so, no burnin required.
@@ -261,11 +258,11 @@ class MissingDataScorer(Scorer):
         self.network = net or self.network
 
         # initialize cpds and data_dirtynodes
-        self.cpds = [None for i in xrange(self.data.numvariables)]
+        self.cpds = [None for i in self.datavars]
         self.data_dirtynodes = set(self.datavars)
         
         # create some useful lists and local variables
-        missingvals = [(row,col) for row,col in self.data.indices_of_missingvals if col in self.dirtynodes]
+        missingvals = transpose(where(self.data.missing[:,self.dirtynodes]==True))
         num_missingvals = len(missingvals)
         arities = self.data.arities
         chosenscores = []
@@ -276,7 +273,7 @@ class MissingDataScorer(Scorer):
         else:
             assignedvals = [stdlib_random.randint(0, arities[col]-1) for row,col in missingvals]
 
-        self.data[unzip(missingvals)] = assignedvals
+        self.data.observations[transpose(missingvals)] = assignedvals
 
         # score once to set cpds and localscores
         self._score_network_core()
@@ -305,7 +302,10 @@ class MissingDataScorer(Scorer):
 
         # save state of gibbs sampler?
         if save_state:
-            self.gibbs_state = GibbsSamplerState(avgscore=self.score, numscores=numscores, assignedvals=self.data[unzip(missingvals)].tolist())
+            self.gibbs_state = GibbsSamplerState(
+                    avgscore=self.score, 
+                    numscores=numscores, 
+                    assignedvals=self.data.observations[unzip(missingvals)].tolist())
 
         return self.score
 
@@ -315,11 +315,11 @@ class MissingDataExactScorer(MissingDataScorer):
         self.network = net or self.network
         
         # initialize cpds and data_dirtynodes
-        self.cpds = [None for i in xrange(self.data.numvariables)]
-        self.data_dirtynodes = set(range(self.data.numvariables))
+        self.cpds = [None for i in self.datavars]
+        self.data_dirtynodes = set(self.datavars))
 
         # create some useful lists and local variables
-        missingvals = [(row,col) for row,col in self.data.indices_of_missingvals if col in self.dirtynodes]
+        missingvals = transpose(where(self.data.missing[:,self.dirtynodes]==True))
         num_missingvals = len(missingvals)
         possiblevals = [range(self.data.arities[col]) for row,col in missingvals]
 
@@ -343,24 +343,46 @@ class MissingDataExactScorer(MissingDataScorer):
 
         return self.score
 
-class MaximumEntropyHiddenVariableScorer(MissingDataScorer):
-    def _maximum_entropy_assignment(self, var):
-        numeach = self.data.numsamples/self.data.arities[var]
-        assignments = flatten(([val]*numeach for val in xrange(self.data.arities[var])))
-        for i in xrange(self.data.numsamples - len(assignments)):
+class MaximumEntropyMissingDataScorer(MissingDataScorer):
+    def _do_maximum_entropy_assignment(self, var):
+        """Assign values to the missing values for this variable such that
+        it has a maximum entropy discretization.
+        """
+
+        arity = self.data.arities[var]
+        numsamples = self.data.samples.size
+
+        missingvals = self.data.missing[:,var]
+        missingsamples = where(missingvals == True)[0]
+        observedsamples = where(missingvals == False)[0]
+        
+        # maximum entropy discretization for *all* samples for this variable
+        numeach = numsamples/arity
+        assignments = flatten([val]*numeach for val in xrange(arity))
+        for i in xrange(numsamples - len(assignments)):  
             assignments.append(i)
 
+        # remove the values of the observed samples
+        for val in self.data.observations[observedsamples, var]:
+            assignments.remove(val)
+
         random.shuffle(assignments)
-        return assignments
+        self.data.observations[missingsamples,var] = assignments
 
-    def _swap_data(self, row1, col1, row2, col2):
-        val1 = self.data[row1][col1]
-        val2 = self.data[row2][col2]
-
-        self._alter_data(row1, col1, val2)
-        self._alter_data(row2, col2, val1)
+    def _swap_data(self, var, sample1, choices_for_sample2):
+        val1 = self.data.observations[sample1, var]
         
-        return (row1, col1, val1, row2, col2, val2)
+        # try swapping till we get a different value (but don't keep trying forever)
+        for i in xrange(len(choices_for_sample2)/2):
+            sample2 = stdlib_random.choice(choices_for_sample2)
+            val2 = self.data.observations[sample2, var]
+            if val1 != val2:
+                break
+
+        self._alter_data(sample1, var, val2)
+        self._alter_data(sample2, var, val1)
+        
+        return (sample1, var, val1, sample2, var, val2)
     
     def _undo_swap(self, row1, col1, val1, row2, col2, val2):
         self._alter_data(row1, col1, val1)
@@ -368,24 +390,29 @@ class MaximumEntropyHiddenVariableScorer(MissingDataScorer):
 
     def score_network(self, stopping_criteria=None, gibbs_state=None, save_state=False):
         # network was altered.. so reset cpds and data_dirtynodes
-        self.cpds = [None for i in xrange(self.data.numvariables)]
-        self.data_dirtynodes = set(range(self.data.numvariables))
+        self.cpds = [None for i in self.datavars]
+        self.data_dirtynodes = set(self.datavars)
 
         # create some useful lists and vars
-        numsamples = self.data.numsamples
-        hiddenvars = [var for var in self.data.hidden_variables if var in self.dirtynodes]
-        num_missingvals = len(hiddenvars)*numsamples
         chosenscores = []
+        numsamples = self.data.samples.size
+        num_missingvals = self.data.missing[self.data.missing == True].shape[0]
+        
+        # any var not fully observed (with at least one missing value)
+        missingvars = [v for v in self.datavars if
+                                v in self.dirtynodes and 
+                                self.data.missing[:,v].any()]
+
+        missingsamples = [where(self.data.missing[:,var] == True)[0] for var in self.datavars)]
 
         # set missing values using last assigned values from previous gibbs run or random values based on node arity
         if gibbs_state:
             assignedvals = gibbs_state.assignedvals
-            self.data[unzip(self.data.indices_of_missingvals)] = assignedvals
+            self.data.observations[where(self.data.missing==True)] = assignedvals
         else:
-            assignedvals = [self._maximum_entropy_assignment(var) for var in hiddenvars]
-            for var, assignments in zip(hiddenvars, assignedvals):
-                self.data[:,var] = assignments
-
+            for var in missingvars:
+                self._do_maximum_entropy_assignment(var)
+        
         # score to initialize cpds, etc.
         self._score_network_core()
 
@@ -398,13 +425,13 @@ class MaximumEntropyHiddenVariableScorer(MissingDataScorer):
         #    2) using a probability wheel, sample a value from the possible values (and set it in the dataset)
         iterations = 0
         while not stopping_criteria(chosenscores, iterations, num_missingvals):
-            for var in hiddenvars:  
-                for sample in xrange(numsamples):
+            for var in missingvars:  
+                for sample in missingsamples[var]:
                     score0 = self._score_network_core()
-                    swap = self._swap_data(sample, var, random.randint(numsamples-1), var)
+                    swap = self._swap_data(var, sample, missingsamples[var]) 
                     score1 = self._score_network_core() 
                     chosenval = logscale_probwheel([score0, score1])
-
+                    
                     if chosenval == 0:
                         # undo swap and select old_score
                         self._undo_swap(*swap)
@@ -421,7 +448,10 @@ class MaximumEntropyHiddenVariableScorer(MissingDataScorer):
 
         # save state of gibbs sampler?
         if save_state:
-            self.gibbs_state = GibbsSamplerState(avgscore=self.score, numscores=numscores, assignedvals=self.data[unzip(missingvals)].tolist())
+            self.gibbs_state = GibbsSamplerState(
+                    avgscore=self.score, 
+                    numscores=numscores, 
+                    assignedvals=self.data.observations[where(self.data.missing==True)].tolist())
         
         return self.score
 
