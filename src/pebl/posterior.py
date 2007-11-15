@@ -1,9 +1,8 @@
-import numpy
 import math
-import network
 from copy import deepcopy
-from numpy import *
-from util import *
+import numpy as N
+from pebl import network
+from pebl.util import *
 import pydot
 
 class Posterior():
@@ -21,7 +20,7 @@ class Posterior():
 
     def __iter__(self):
         for adjmat,score in zip(self.adjacency_matrices, self.scores):
-            net = network.from_nodes_and_edgelist(self.nodes, adjmat)
+            net = network.Network(self.nodes, adjmat)
             net.score = score
             yield net
 

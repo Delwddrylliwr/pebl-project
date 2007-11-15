@@ -1,4 +1,6 @@
-import tempfile, os
+import tempfile
+import os, os.path
+import inspect
 
 location = tempfile.mkdtemp()
 def setup():
@@ -6,3 +8,10 @@ def setup():
 
 def teardown():
     os.system("rm -rf %s" % location)
+
+def datadir():
+    return os.path.join(
+            os.path.dirname(inspect.getfile(datadir)),
+            'datasets'
+    )
+

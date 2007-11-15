@@ -5,7 +5,8 @@ import random as stdlib_random
 
 random.seed()
 
-class CyclicNetworkException(Exception): pass
+# Exceptions
+class CyclicNetworkError(Exception): pass
 
 class Scorer(object):
     def __init__(self, network_, pebldata, prior_=None, subscorer=None):
@@ -30,10 +31,11 @@ class Scorer(object):
                 [node] + self.network.edges.parents(node),            # variables: node and its parents
                 where(self.data.interventions[:,node] == False)[0]))  # samples: those w/o interventions on node
 
-    def _localscore(self, node):
-        _index = lambda node: tuple([node] + self.network.edges.parents(node))
+    def _index(self, node):
+        return tuple([node] + self.network.edges.parents(node))
 
-        index = _index(node)
+    def _localscore(self, node):
+        index = self._index(node)
         score = self.localscore_cache.get(index, None)
 
         if not score:
@@ -67,7 +69,7 @@ class SmartScorer(Scorer):
         self.localscores = zeros((self.data.variables.size), dtype=float)
         self.last_alteration = ()
         self.saved_state = None
- 
+
         # set appropriate _determine_dirtynodes() method
         if self.data.missing.any():
             self._determine_dirtynodes = self._determine_dirtynodes_with_hidden_nodes
@@ -130,10 +132,10 @@ class SmartScorer(Scorer):
         if not self.network.is_acyclic():
             self.network.edges.remove_many(add)
             self.network.edges.add_many(remove)
-            raise CyclicNetworkException()
+            raise CyclicNetworkError()
         
         # Edge src-->dest was added or removed. either way, dest's parentset changed and is thus dirty.
-        self.dirtynodes = self._determine_dirtynodes(add, remove)
+        self.dirtynodes = self.dirtynodes.union(self._determine_dirtynodes(add, remove))
         self.last_alteration = (add, remove)
         
         self._backup_state()
@@ -144,7 +146,7 @@ class SmartScorer(Scorer):
     def restore_network(self):
         """Undo the last alter_and_score_network()"""
 
-        added, removed = self.network_alterations
+        added, removed = self.last_alteration
         self._restore_state()
         
         self.dirtynodes = set()
@@ -262,8 +264,8 @@ class MissingDataScorer(Scorer):
         self.data_dirtynodes = set(self.datavars)
         
         # create some useful lists and local variables
-        missingvals = transpose(where(self.data.missing[:,self.dirtynodes]==True))
-        num_missingvals = len(missingvals)
+        missing_indices = unzip(where(self.data.missing[:,list(self.dirtynodes)]==True))
+        num_missingvals = len(missing_indices)
         arities = self.data.arities
         chosenscores = []
 
@@ -271,9 +273,9 @@ class MissingDataScorer(Scorer):
         if gibbs_state:
             assignedvals = gibbs_state.assignedvals
         else:
-            assignedvals = [stdlib_random.randint(0, arities[col]-1) for row,col in missingvals]
+            assignedvals = [stdlib_random.randint(0, arities[col]-1) for row,col in missing_indices]
 
-        self.data.observations[transpose(missingvals)] = assignedvals
+        self.data.observations[unzip(missing_indices)] = assignedvals
 
         # score once to set cpds and localscores
         self._score_network_core()
@@ -287,7 +289,7 @@ class MissingDataScorer(Scorer):
         #    2) using a probability wheel, sample a value from the possible values
         iterations = 0
         while not stopping_criteria(chosenscores, iterations, num_missingvals):
-            for row,col in missingvals:
+            for row,col in missing_indices:
                 scores = [self._alter_data_and_score(row, col, val) for val in xrange(arities[col])]
                 chosenval = logscale_probwheel(scores)
                 self._alter_data(row, col, chosenval)
@@ -305,7 +307,7 @@ class MissingDataScorer(Scorer):
             self.gibbs_state = GibbsSamplerState(
                     avgscore=self.score, 
                     numscores=numscores, 
-                    assignedvals=self.data.observations[unzip(missingvals)].tolist())
+                    assignedvals=self.data.observations[unzip(missing_indices)].tolist())
 
         return self.score
 
@@ -316,12 +318,12 @@ class MissingDataExactScorer(MissingDataScorer):
         
         # initialize cpds and data_dirtynodes
         self.cpds = [None for i in self.datavars]
-        self.data_dirtynodes = set(self.datavars))
+        self.data_dirtynodes = set(self.datavars)
 
         # create some useful lists and local variables
-        missingvals = transpose(where(self.data.missing[:,self.dirtynodes]==True))
-        num_missingvals = len(missingvals)
-        possiblevals = [range(self.data.variables[col].arity) for row,col in missingvals]
+        missing_indices = unzip(where(self.data.missing[:,self.dirtynodes]==True))
+        num_missingvals = len(missing_indices)
+        possiblevals = [range(self.data.variables[col].arity) for row,col in missing_indices]
 
         # score once to set cpds and localscores
         self._score_network_core()
@@ -403,7 +405,7 @@ class MaximumEntropyMissingDataScorer(MissingDataScorer):
                                 v in self.dirtynodes and 
                                 self.data.missing[:,v].any()]
 
-        missingsamples = [where(self.data.missing[:,var] == True)[0] for var in self.datavars)]
+        missingsamples = [where(self.data.missing[:,var] == True)[0] for var in self.datavars]
 
         # set missing values using last assigned values from previous gibbs run or random values based on node arity
         if gibbs_state:

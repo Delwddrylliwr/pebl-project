@@ -4,41 +4,9 @@ test = None
 
 from pebl.learners import scorer
 from pebl import data, network
+from pebl.test import datadir
 import os
 import copy
-
-TESTDATA2 = """0	2	X	1	2
-1	2	X	1	1
-2	1	X	0	2
-2	1	X	1	1
-1	1	X	2	1
-1	1	X	0	1
-2	0	X	1	0
-1	2	X	1	1
-1	0	X	0	2
-1	2	X	2	0
-2	1	X	0	2
-1	2	X	0	2
-0	2	X	0	1
-1	2	X	1	2
-1	2	X	0	0
-1	0	X	1	0
-1	2	X	0	0
-1	2	X	0	1
-2	0	X	2	2
-1	1	X	0	1
-1	0	X	0	2
-0	1	X	1	1
-2	2	X	2	2
-2	2	X	1	0
-2	0	X	2	2
-2	1	X	0	0
-0	2	X	0	1
-1	0	X	2	2
-1	2	X	1	1
-0	0	X	2	1
-"""
-
 
 def _create_data_and_net():
     # this data and net from test_stochfunc.TestMultinomialStochasticFunction.test_loglikelihood
@@ -48,12 +16,9 @@ def _create_data_and_net():
                [1, 1, 1, 0],
                [0, 0, 1, 1]
         ])
-    dat = data.PeblData(a.shape, buffer=a, dtype=a.dtype)
-    dat._calculate_arities()
+    dat = data.PeblData(a)
     net = network.fromdata(dat)
-    
-    for edge in [(1,0), (2,0), (3,0)]:
-        net.edges.add(edge)
+    net.edges.add_many([(1,0), (2,0), (3,0)])
     
     return dat, net
 
@@ -61,53 +26,56 @@ def _create_data_and_net():
 class TestBasicScorer:
     def setUp(self):
         self.data, self.net = _create_data_and_net()
-        self.scorer = scorer.BasicScorer(self.net, self.data)
+        self.scorer = scorer.Scorer(self.net, self.data)
 
     def test_create_distribution(self):
         try:
-            self.scorer._create_distribution(0)
-            self.scorer._create_distribution(1)
+            self.scorer._cpd(0)
+            self.scorer._cpd(1)
         except:
-            assert 1 == 2, "Trying to create distributions."
+            assert False, "Trying to create distributions."
 
     def test_score_node(self):
-        score = self.scorer._score_node(0) 
+        score = self.scorer._localscore(0) 
         assert score - -3.87120101107 <= .0001, "Checking for correct score." 
         
     def test_caching(self):
         # score node, then check if it's in cache.
-        self.scorer._score_node(0)
-        assert self.scorer.index(0) in self.scorer.cached_localscores.keys(), "Checking cache."
+        self.scorer._localscore(0)
+        assert self.scorer._index(0) in self.scorer.localscore_cache.keys(), "Checking cache."
 
-class TestTransactionalScorer:
+class TestSmartScorer:
     def setUp(self):
         self.data, self.net = _create_data_and_net()
-        self.scorer = scorer.ManagedScorer(self.net, self.data)
+        self.scorer = scorer.SmartScorer(self.net, self.data)
+
+        self.net2 = network.fromdata(self.data)
+        self.net2.edges.add_many(list(self.net.edges))
 
     def test_alteration_cyclic(self):
-        assert self.scorer.alter_network(add=[(0,1)]) is False, "Creating cyclic network."
+        try:
+            self.scorer.alter_and_score_network(add=[(0,1)]), "Creating cyclic network."
+            assert False, "Should've raised exception on cyclic network"
+        except scorer.CyclicNetworkError:
+            pass
 
     def test_alteration_cyclic2(self):
-        self.scorer.alter_network(add=[(0,1)])
-        assert (0,1) not in self.net.edges, "Network shouldn't be altered to be in cyclic state."
+        try:
+            self.scorer.alter_and_score_network(add=[(0,1)])
+        except scorer.CyclicNetworkError:
+            pass
 
-    def test_dirtynodes(self):
-        # alter net, check dirtynodes
-        self.scorer.alter_network(add=(2,3))
-        assert 3 in self.scorer.dirtynodes, "Nodes should be marked dirty after change."
+        assert (0,1) not in self.net.edges, "Network shouldn't be altered to be in cyclic state."
 
     def test_alteration_scoring(self):
         # scorer(net2).score_network()
         #  VS
         # scorer(net1).alter_network() then, scorer.score_network()
         # scores should be the same.
-        
-        self.scorer.alter_network(add=(2,3))
-        score1 = self.scorer.score_network()
+        score1 = self.scorer.alter_and_score_network(add=[(2,3)])
 
-        net2 = self.net
-        net2.edges.add((2,3))
-        scorer2 = scorer.ManagedScorer(net2, self.data)
+        self.net2.edges.add((2,3))
+        scorer2 = scorer.Scorer(self.net2, self.data)
         score2 = scorer2.score_network()
 
         assert score1 == score2, "Scores should be same regardless of how we arrive at network."
@@ -115,78 +83,61 @@ class TestTransactionalScorer:
     def test_restoring1(self):
         # score net, make changes, undo changes, scores should be same
         score1 = self.scorer.score_network()
-        self.scorer.alter_network(add=[(2,3), (1,2)], remove=(1,0))
+        saved_localscores = copy.deepcopy(self.scorer.localscores)
+
+        score2 = self.scorer.alter_and_score_network(add=[(2,3), (1,2)], remove=[(1,0)])
         self.scorer.restore_network()
-        score2 = self.scorer.score_network()
+        score3 = self.scorer.score_network()
 
-        assert score1 == score2, "Alter followed by restore should leave score unchanged."
-
-    def test_restoring2(self):
-        # score net, make changes, SCORE, undo changes, score. 
-        # 1st and last scores should be same.
-        score1 = self.scorer.score_network()
-        localscores1 = self.scorer.localscores.copy()
-        
-        self.scorer.alter_network(add=[(2,3), (1,2)], remove=(1,0))
-        self.scorer.score_network()
-        self.scorer.restore_network()
-        
-        score2 = self.scorer.score_network()
-        localscores2 = self.scorer.localscores.copy()
-
-        assert score1 == score2, "Alter followed by score and restore should leave score unchanged."
-        assert all(localscores1 == localscores2), "Alter followed by score and restore should leave localscores unchanged."
-
+        assert score1 == score3, "Alter followed by restore should leave score unchanged."
+        assert all(self.scorer.localscores == saved_localscores)
 
     def test_scoring(self):
         # ensure that score is correct after a series of alters and restores.
         score1 = self.scorer.score_network()
-        self.scorer.alter_network(add=(2,3))
-        self.scorer.alter_network(remove=(1,0))
-        self.scorer.score_network()
-        self.scorer.alter_network(add=(1,2))
+        self.scorer.alter_and_score_network(add=[(2,3)])
+        self.scorer.alter_and_score_network(remove=[(1,0)])
+        self.scorer.alter_and_score_network(add=[(1,2)])
         self.scorer.restore_network()
-        self.scorer.alter_network(add=(1,0))
-        self.scorer.score_network()
-        self.scorer.alter_network(remove=(2,3))
+        self.scorer.alter_and_score_network(add=[(1,0)])
+        self.scorer.alter_and_score_network(remove=[(2,3)])
         score2 = self.scorer.score_network()
         
         assert score1 == score2, "Long series of alters and restores."
 
 
 class TestMissingDataScorer:
+    scorer_type = scorer.MissingDataScorer
+
     def setUp(self):
         # write out test data (don't want to depend on external data files)
-        f = open("testdata2.txt", 'w')
-        f.write(TESTDATA2)
-        f.close()
-        
-        self.data = data.fromfile("testdata2.txt")
-        self.data.arities[2] = 3
-        self.net = network.fromdata(self.data)
         a,b,c,d,e = 0,1,2,3,4
+        
+        self.data = data.fromfile(os.path.join(datadir(), 'testdata5.txt'))
+        self.net = network.fromdata(self.data)
         self.net.edges.add_many([(a,c), (b,c), (c,d), (c,e)])
-        self.scorer = scorer.MissingDataScorer(self.net, self.data)
-
-    def tearDown(self):
-        try:
-            os.unlink("testdata2.txt")
-        except:
-            pass
+        self.scorer = self.scorer_type(self.net, self.data)
 
     def test_gibbs_scoring(self):
         # score two nets (correct one and bad one) with missing values.
         # ensure that correct one scores better. (can't check for exact score)
-        
+        stopping_criteria = lambda scores,iterations,N: iterations >= 10*N**2
+
+
         # score network: {a,b}->c->{d,e}
-        score1 = self.scorer.score_network(lambda scores,iterations,N: iterations >= 10*N**2)
+        score1 = self.scorer.score_network(stopping_criteria=stopping_criteria)
 
         # score network: {a,b}->{d,e} c
         a,b,c,d,e = 0,1,2,3,4
-        self.scorer.alter_network(remove=[(a,c), (b,c), (c,d), (c,e)], add=[(a,d), (a,e), (b,d), (b,e)])
-        score2 = self.scorer.score_network(lambda scores,iterations,N: iterations >= 10*N**2)
+
+        data2 = data.fromfile(os.path.join(datadir(), 'testdata5.txt'))
+        net2 = network.fromdata(self.data)
+        net2.edges.add_many([(a,d), (a,e), (b,d), (b,e)])
+        scorer2 = self.scorer_type(net2, data2)
+        score2 = scorer2.score_network(stopping_criteria=stopping_criteria)
 
         # score1 should be better than score2
+        print score1, score2
         assert score1 > score2, "Gibbs sampling can find goodhidden node."
 
     def test_gibbs_saving_state(self):
@@ -245,4 +196,5 @@ class TestMissingDataScorer:
 
         assert score1 == score2, "Can restore network alterations (even after it's been scored)."
 
-
+class TestMaximumEntropyMissingDataScorer(TestMissingDataScorer):
+    scorer_type = scorer.MaximumEntropyMissingDataScorer

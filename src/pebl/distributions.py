@@ -24,7 +24,7 @@ class MultinomialDistribution(Distribution):
         qi = int(product(arities[1:]))
         self.counts = zeros((qi, arities[0] + 1), dtype=int)
         
-        if pebldata.variables.size is 1:
+        if pebldata.variables.size == 1:
             self.offsets = [0]
         else:
             multipliers = concatenate(([1], pebldata.arities[1:-1]))
@@ -32,11 +32,11 @@ class MultinomialDistribution(Distribution):
             self.offsets = concatenate(([0], offsets))
 
         # add data to cpt
-        self._change_counts(pebldata, 1)
+        self._change_counts(pebldata.observations, 1)
 
-    def _change_counts(self, pebldata, change=1):
-        indices = dot(pebldata, self.offsets)
-        child_values = pebldata[:,0]
+    def _change_counts(self, observations, change=1):
+        indices = dot(observations, self.offsets)
+        child_values = observations[:,0]
 
         for j,k in izip(indices, child_values):
             self.counts[j][k] += change

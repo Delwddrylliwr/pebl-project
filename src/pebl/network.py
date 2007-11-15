@@ -1,4 +1,4 @@
-"""Classes for representing nodes, edges and networks.
+"""Classes for representing networks.
 
 A pebl network is a collection of nodes and directed edges between nodes.  Nodes and 
 edges, while related, are unbound to each other and edges can be copied from one network 
@@ -23,11 +23,7 @@ import tempfile
 import tempfile
 import subprocess
 import os
-
-try:
-    import pydot
-except:
-    pass
+import pydot
 
 from numpy import zeros, nonzero, all, linalg, random, identity, invert, signbit, iscomplex, any, ndarray
 
@@ -251,13 +247,18 @@ class MatrixEdgeList(EdgeList):
 
 
 class Network(object):
-    """ A network is essentially a collection of edges between nodes.
+    """ A network is essentially just a collection of edges between nodes."""
     
-    """
-    
-    def __init__(self, nodes):
+    def __init__(self, nodes, edges=None):
         self.nodes = nodes
-        self.edges = MatrixEdgeList(len(self.nodes))
+        
+        if edges and isinstance(edges, N.ndarray):
+            self.edges = MatrixEdgeList(adjacency_matrix=edges)
+        else:
+           self.edges = MatrixEdgeList(num_nodes=len(self.nodes))
+           if isinstance(edges, list):
+               self.edges.add_many(edges)
+
 
     def is_acyclic__eigval_implementation(self):
         # first check for self-loops (1 along diagonal)
@@ -282,7 +283,7 @@ class Network(object):
         Checks whether the network contains any cycles/loops.
         """
         startnodes = startnodes or range(len(self.nodes))
-        return self._is_acyclic(startnodes)
+        return self._is_acyclic__dfs_implementation(startnodes)
         
     def _is_acyclic__dfs_implementation(self, startnodes, visitednodes=[]):
         startnodes = ensure_list(startnodes)
@@ -381,17 +382,8 @@ class Network(object):
         g = decorator(g)
         g.write_png(filename, prog="dot")
         
-### functions
+# Factory functions
 def fromdata(data_):
     net = Network(data_.variables)
-    return net
-
-def from_nodes_and_edgelist(nodes, edgelist):
-    net = Network(nodes)
-    
-    if isinstance(edgelist, ndarray):
-        edgelist = MatrixEdgeList(adjacency_matrix=edgelist)
-
-    net.edges = edgelist
     return net
 

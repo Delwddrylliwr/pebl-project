@@ -1,11 +1,7 @@
 import os
-
-# set numpy.test to None so we don't run numpy's tests.
-from numpy import *
-test = None
-
+import numpy as N
 from pebl import network, data
-
+from pebl.test import datadir
 
 class TestSparseEdgeList:
     # Which class of edgelist to use
@@ -16,7 +12,23 @@ class TestSparseEdgeList:
         self.tuplelist = [(0,2), (0,5), (1,2)]
         for edge in self.tuplelist:
             self.edges.add(edge)
-        
+    
+    def test_add(self):
+        self.edges.add((5,1))
+        assert set(self.edges) == set(self.tuplelist + [(5,1)])
+
+    def test_add_many(self):
+        self.edges.add_many([(5,1), (5,2)])
+        assert set(self.edges) == set(self.tuplelist + [(5,1), (5,2)])
+
+    def test_remove(self):
+        self.edges.remove((0,2))
+        assert set(self.edges) == set([(0,5), (1,2)])
+
+    def test_remove_many(self):
+        self.edges.remove_many([(0,2), (0,5)])
+        assert set(self.edges) == set([(1,2)])
+
     def test_edgeiter(self):
         assert set(self.edges) == set(self.tuplelist), "Can use edgelist as an iterable object."
     
@@ -64,75 +76,47 @@ class TestSparseEdgeList:
             [0,0,0,0,0,0],
             [0,0,0,0,0,0],
         ]
-        assert (self.edges.adjacency_matrix == array(expected, dtype=bool)).all(), "Testing boolean matrix representation."
+        assert (self.edges.adjacency_matrix == N.array(expected, dtype=bool)).all(), "Testing boolean matrix representation."
 
 
 class TestMatrixEdgeList(TestSparseEdgeList):
     # Which class of edgelist to use
     edgelist_class = network.MatrixEdgeList
 
-
-class TestNodeList:
-    def setUp(self):
-        nodes = [network.Node(0, "Foo"), network.Node(1, "Foobar"), network.Node(2, "bar"), network.Node(3, "Node X", hidden=True)]
-        self.nodes = network.NodeList(nodes)
-
-    def test_num_hiddennodes(self):
-        assert self.nodes.num_hiddennodes == 1, "Checking number of hidden nodes."
-
-    def test_slicing(self):
-        assert hasattr(self.nodes[:2], 'byname'), "Slices of NodeList should be NodeList instances."
-
-    def test_indexing(self):
-        assert not hasattr(self.nodes[2], 'byname'), "NodeList.__getitem__ should return items, not NodeLists."
-
-    def test_add(self):
-        self.nodes.add(network.Node(9, "Node XX"))
-        assert len(self.nodes) == 5, "Adding to NodeList"
-
-    def test_remove(self):
-        self.nodes.remove(self.nodes[2])
-        assert len(self.nodes) == 3, "Removing from NodeList."
-
-    def test_byname_simple(self):
-        assert self.nodes.byname("Foo").id == 0, "Using byname to retrieve a node."
-
-    def test_byname_multiple(self):
-        nodes = self.nodes.byname(["Foo", "Foobar"])
-        nodeids = [n.id for n in nodes]
-        assert nodeids == [0,1], "Using byname to retrieve multiple nodes."
-
-    def test_byname_regexp(self):
-        nodes = self.nodes.byname(namelike="bar")
-        nodeids = [n.id for n in nodes]
-        assert nodeids == [1,2], "Using byname to retrieve nodes using regexps."
-
 class TestNetwork:
     def setUp(self):
-        self.net = network.Network()
-        for node in [ network.Node(id=0, name="NodeA"),
-                      network.Node(1, "NodeB"),
-                      network.Node(2),
-                      network.Node(3, "Hidden1", hidden=True)]:
-            self.net.nodes.add(node)
-
-        self.net.finalize_nodelist()
+        self.net = network.Network([data.Variable(id=i, arity=3) for i in xrange(6)])
         for edge in [(0,1), (0,3), (1,2)]:
             self.net.edges.add(edge)
 
-    def test_loopchecking_on_acyclic_net(self):
+    def test_loopchecking_on_acyclic_net1(self):
         assert self.net.is_acyclic(), "Network is acyclic."
 
-    def test_loopchecking_on_cyclic_net(self):
+    def test_loopchecking_on_acyclic_net2(self):
+        assert self.net.is_acyclic__eigval_implementation(), "Network is acyclic."
+
+    def test_loopchecking_on_acyclic_net3(self):
+        assert self.net.is_acyclic__dfs_implementation(), "Network is acyclic."
+
+    def test_loopchecking_on_cyclic_net1(self):
         self.net.edges.add((2,0))
         assert not self.net.is_acyclic(), "Network should be cyclic."
 
+    def test_loopchecking_on_cyclic_net2(self):
+        self.net.edges.add((2,0))
+        assert not self.net.is_acyclic__eigval_implementation(), "Network should be cyclic."
+    
+    def test_loopchecking_on_cyclic_net3(self):
+        self.net.edges.add((2,0))
+        assert not self.net.is_acyclic__dfs_implementation(), "Network should be cyclic."
+    
     def test_randomize(self):
         self.net.randomize()
         assert self.net.is_acyclic(), "Random network should be acyclic."
 
-    def test_num_hiddennodes(self):
-        assert self.net.nodes.num_hiddennodes == 1, "Checking number of hidden nodes."
+    def test_randomize2(self):
+        self.net.randomize__naive_implementation()
+        assert self.net.is_acyclic(), "Random network should be acyclic."
 
     def test_as_pydot(self):
         assert len(self.net.as_pydot().edge_list) == 3, "Can convert to pydot graph instance."
@@ -147,39 +131,24 @@ class TestNetwork:
         
         assert file_exists, "Can create image file."
 
-class TestFromData:
+class NetworkFromListOfEdges:
     def setUp(self):
-        a = array([[1.2, 1.4, 2.1, 2.2, 1.1],
-                   [2.3, 1.1, 2.1, 3.2, 1.3],
-                   [3.2, 0.0, 2.2, 2.5, 1.6],
-                   [4.2, 2.4, 3.2, 2.1, 2.8],
-                   [2.7, 1.5, 0.0, 1.5, 1.1],
-                   [1.1, 2.3, 2.1, 1.7, 3.2]
-        ])
+        self.net = network.Netork(
+            nodes = network.Network([data.Variable(id=i, arity=3) for i in xrange(6)]),
+            edges = [(0,1), (4,5), (2,3)]
+        )
 
-        self.data = data.PeblData(a.shape, buffer=a, dtype=a.dtype)
-        self.data.missingvals = array([[0,0,0,0,1],
-                                       [0,0,0,0,1],
-                                       [0,1,0,0,1],
-                                       [0,1,0,0,1],
-                                       [0,0,1,0,1],
-                                       [0,0,0,0,1] ])
-        self.data._calculate_arities()
-        self.data.variablenames = ["gene A", "gene B", "", " receptor D", "E kinase protein"]
-        self.net = network.fromdata(self.data)
+    def test_number_of_edges(self):
+        assert len(list(self.net.edges)) == 3
 
-    def test_basic(self):
-        assert self.net, "Check that network object was created."
+class NetworkFromMatrixEdgeList(NetworkFromListOfEdges):
+    def setUp(self):
+        edges = [(0,1), (4,5), (2,3)]
+        medgelist = network.MatrixEdgeList(num_nodes=6)
+        medgelist.add_many(edges)
 
-    def test_nodes(self):
-        assert len(self.net.nodes) == 5, "Check that all nodes were created."
-
-    def test_nodename(self):
-        assert self.net.nodes[0].name == "gene A", "Node name extracted from variable name."
-
-    def test_nodename_when_notgiven(self):
-        assert self.net.nodes[2].name == "2", "Node name defaults to node's id."
-
-    def test_hiddennode(self):
-        assert self.net.nodes[4].hidden, "Node should be a hidden node."
+        self.net = network.Netork(
+            nodes = network.Network([data.Variable(id=i, arity=3) for i in xrange(6)]),
+            edges = medgelist
+        )
 

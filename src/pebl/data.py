@@ -4,9 +4,15 @@ import re
 import numpy as N
 from itertools import groupby
 from util import *
+import copy
 
+# Exceptions
 class ParsingError(Exception): pass
 
+class IncorrectArityError(Exception):
+    msg = "The arities specified in the data are incorrect."
+
+# Variable and Sample Annotations
 class Annotation(Struct):
     def __repr__(self):
         name = getattr(self, 'name', self.id)
@@ -16,15 +22,31 @@ class Variable(Annotation): pass
 class Sample(Annotation): pass
 
 class PeblData(object):
-    def __init__(self, observations, missing, interventions, variables, samples):
+    def __init__(self, observations, missing=None, interventions=None, variables=None, samples=None):
         self.observations = observations
         self.missing = missing
         self.interventions = interventions
         self.variables = variables
         self.samples = samples
 
-        if not hasattr(self.variables[0], 'arity'):
-            self._guess_arities()
+        # With numpy.ndarray object X, we can't do 'if not X' to check the truth value 
+        # because it raises an exception. So, we must use the non-pythonic 'if X is None'
+        
+        if missing is None:
+            self.missing = N.zeros(observations.shape, dtype=bool)
+        if interventions is None:
+            self.interventions = N.zeros(observations.shape, dtype=bool)
+        if variables is None:
+            self.variables = N.array([Variable(id=str(i)) for i in xrange(observations.shape[1])])
+        if samples is None:
+            self.samples = N.array([Sample(id=str(i)) for i in xrange(observations.shape[0])])
+
+        # guess variable arities if they're not specified (if discretized data)
+        if observations.dtype is N.dtype('byte'):
+            if not hasattr(self.variables[0], 'arity'):
+                self._guess_arities()
+            else:
+                self._check_arities()
 
     def subset(self, variables=None, samples=None):
         """Return a subset of the dataset."""
@@ -60,10 +82,25 @@ class PeblData(object):
     def _guess_arities(self):
         """Tries to guess arity of variables by counting the number of unique observations."""
 
-        for var in self.variables:
-            var.arity = N.unique(self.observations[:,var]).size
+        for col,var in enumerate(self.variables):
+            var.arity = N.unique(self.observations[:,col]).size
 
-    def _NOT_READY_tofile(self, filename):
+    def _check_arities(self):
+        """Checks, for eavh variable, whether the specified airty >= number of unique observations.
+
+        If this check fails, the CPT and other data structures would fail.
+        So, we should raise error while loading the data. Fail Early and Explicity!
+        """
+        
+        match =  all(var.arity >= N.unique(self.observations[:,col]).size 
+                      for col,var in enumerate(self.variables))
+
+        if not match:
+            raise IncorrectArityError
+            
+
+    
+    def tofile(self, filename):
         """Write the data and metadata to file in a tab-delimited format."""
         
         f = file(filename, 'w')
@@ -95,7 +132,15 @@ example_data = """
 2\t1\t0!\t1!\tx
 !0\tX\tx\t0\t1
 """
-     
+
+# Functions for dealing with data
+def fromfile(filename):
+    f = file(filename)
+    d = fromstring(f.read())
+    f.close()
+
+    return d
+
 def fromstring(stringrep):
     # parse a data item (examples: '5' '2.5', 'X', '5!')
     def parse_dataitem(item):
@@ -125,9 +170,10 @@ def fromstring(stringrep):
 
         return (value, missing, intervention)
 
-    metadata_re = re.compile("([^\.]*\.)?(.*)\[(.*)\]=(.*)$")
-    bool_converter = lambda x: bool(int(x))
     # parse metadata line
+    metadata_re = re.compile("([^\.]*\.)?(.*)\s*\[\s*(.*)\s*\]\s*=\s*(.*)$")
+    bool_converter = lambda x: bool(int(x))
+    
     def parse_metadata(line):
         """Parses metadata annotations like '%variable.arity[int]=2\t3\t2\t2'"""
         
@@ -137,15 +183,19 @@ def fromstring(stringrep):
 
         annotfor, name, datatype, values = match.groups()
         annotfor = annotfor[:-1]  # remove the trailing period from annotfor
-        
+        name = name.strip()
+        datatype = datatype.strip()
+
         try:
             converter = bool_converter if datatype == 'bool' else eval(datatype) 
         except NameError:
             raise ParsingError(
                 "Invalid datatype (%s) for annotation (%s.%s)." % (datatype, annotfor, name)
             )
-   
-        values = [converter(v) for v in re.split(',|\t', values)]
+       
+        values = [v.strip() for v in re.split(',|\t', values)]
+        values = [converter(v) for v in values]
+
         return (annotfor, name, values)
     
     # create array of variable or sample annotations
@@ -155,28 +205,28 @@ def fromstring(stringrep):
 
         if 'id' not in names:
             names.append('id')
-            values.append(range(length))
+            values.append([str(i) for i in xrange(length)])
 
         valuesets = unzip(values)  
 
-        return array([annotation_type(**dict((n,v) for n,v in zip(names, values))) for values in valuesets])
+        return N.array([annotation_type(**dict((n,v) for n,v in zip(names, values))) for values in valuesets])
 
     # -------------------------------------------------------------------------------------------------
 
     # split on all known line seperators, then ignore blank and comment lines
     lines = (l.strip() for l in stringrep.splitlines() if l)
     lines = (l for l in lines if not l.startswith('#'))
-    
-    # separate and then parse metadata and data lines 
+
+    # separate into metadata and data lines 
     linetype = lambda line: 'metadata' if line.startswith('%') else 'data'
-    for group,grouplines in groupby(lines, linetype):
-        if group is 'metadata':
-            metadata = [parse_metadata(l) for l in grouplines]
-        else:
-            data_ = N.array([[parse_dataitem(i) for i in l.split('\t')] for l in grouplines])
-            # data_ is a 3D array where the inner dimension is over (values, missing, interventions)
-            # transpose(2,0,1) makes the inner dimension the outer one
-            observations, missing, interventions = data_.transpose(2,0,1)
+    groupdict = dict((group, list(grouplines)) for group,grouplines in groupby(lines, linetype))
+    
+    # parse metadata and data
+    metadata = [parse_metadata(l) for l in groupdict.get('metadata', [])]
+    data_ = N.array([[parse_dataitem(i) for i in l.split('\t')] for l in groupdict['data']])
+    # data_ is a 3D array where the inner dimension is over (values, missing, interventions)
+    # transpose(2,0,1) makes the inner dimension the outer one
+    observations, missing, interventions = data_.transpose(2,0,1)
 
     # create variable and sample annotations from the metadata
     variables = annotations(Variable, [m for m in metadata if m[0] == 'variable'], observations.shape[1])
@@ -206,28 +256,44 @@ def fromstring(stringrep):
 # Note: All 4s discretize to 0.. which makes bin sizes unequal..                                                 
 def discretize_variables(data_, includevars=None, excludevars=[], numbins=3):
     newdata = copy.deepcopy(data_)
-    includevars = ensure_list(includevars or range(len(newdata.variables)))
-    binsize = len(newdata.samples)//numbins
+    binsize = newdata.samples.size//numbins
 
-    vars = (var for var in includevars if var not in excludevars)
-    for var in vars:
-        row = newdata.observations[:,var]
-        argsorted = row.argsort()
-        binedges = [row[argsorted[binsize*b - 1]] for b in range(numbins)][1:]
-        newdata.observations[:,var] = N.searchsorted(binedges, row)
+    includevars = ensure_list(includevars or range(newdata.variables.size))
+    includevars = [var for var in includevars if var not in excludevars]
+    for var in includevars:
+        col = newdata.observations[:,var]
+        argsorted = col.argsort()
+        binedges = [col[argsorted[binsize*b - 1]] for b in range(numbins)][1:]
+        newdata.observations[:,var] = N.searchsorted(binedges, col)
         newdata.variables[var].arity = numbins
 
+    # if discretized all variables, then cast observations to byte or int
+    if len(includevars) == newdata.variables.size:
+        obstype = 'byte' if newdata.observations.max() < 255 else 'int'
+        newdata.observations = newdata.observations.astype(obstype)
+    
     return newdata
+
 
 def discretize_variables_in_groups(data_, samplegroups, includevars=None, excludevars=[], numbins=3):
     newdata = copy.deepcopy(data_)
 
-    includevars = ensure_list(includevars or range(len(newdata.variables)))
+    includevars = ensure_list(includevars or range(newdata.variables.size))
     
+    # discretize data in sample groups
     for samplegroup in samplegroups:
-        newdata.observations[samplegroup] = newdata.discretize_variables(
-                                                newdata.observations[samplegroup], 
-                                                includevars, excludevars, numbins)
+        discdata = discretize_variables(newdata.subset(samples=samplegroup), 
+                                        includevars, excludevars, numbins)
+        newdata.observations[samplegroup] = discdata.observations
+
+    # set the arity to the number of bins requested
+    for v in newdata.variables:
+        v.arity = numbins
+    
+    # if discretized all variables, then cast observations to byte or int
+    if len(includevars) == newdata.variables.size:
+        obstype = 'byte' if newdata.observations.max() < 255 else 'int'
+        newdata.observations = newdata.observations.astype(obstype)
 
     return newdata
 
