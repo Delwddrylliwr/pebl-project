@@ -52,7 +52,7 @@ class Posterior():
         # but since scores are in log, 
         # entropy = -exp(scores)*scores
         lscores = rescale_logvalues(self.scores)
-        return -N.exp(lscores)*lscores
+        return -N.sum(N.exp(lscores)*lscores)
 
  
 
