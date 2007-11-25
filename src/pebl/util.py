@@ -171,7 +171,7 @@ def entropy_of_list(lst):
     probs = unique_counts/total
 
     # remove probabilities==0 because log(0) = -Inf and causes problems.
-    # This is ok because plog(p) ==0*log(0) == 0 so removing these doesn't affect the final sum.
+    # This is ok because p*log(p) == 0*log(0) == 0 so removing these doesn't affect the final sum.
     probs = probs[probs>0] 
 
     return sum(-probs*numpy.log(probs))

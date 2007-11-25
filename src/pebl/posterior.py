@@ -11,11 +11,11 @@ class Posterior():
         adjacency_matrices_and_scores = sorted(zip(adjacency_matrices, scores), cmp=lambda x,y:cmp(x[1],y[1]), reverse=True)
         adjacency_matrices, scores = unzip(adjacency_matrices_and_scores)
 
-        self.adjacency_matrices = array(adjacency_matrices)
-        self.scores = array(scores)
+        self.adjacency_matrices = N.array(adjacency_matrices)
+        self.scores = N.array(scores)
 
     def _consensus_matrix(self):
-        norm_scores = normalize(exp(rescale_logvalues(self.scores)))
+        norm_scores = normalize(N.exp(rescale_logvalues(self.scores)))
         return sum(n*s for n,s in zip(self.adjacency_matrices, norm_scores))
 
     def __iter__(self):
@@ -28,7 +28,7 @@ class Posterior():
         if isinstance(key, slice):
             return self.__getslice__(self, key.start, key.stop)
         
-        net = network.from_nodes_and_edgelist(self.nodes, self.adjacency_matrices[key])
+        net = network.Network(self.nodes, self.adjacency_matrices[key])
         net.score = self.scores[key]
         return net
 
@@ -44,5 +44,15 @@ class Posterior():
         features[features < threshold] = 0
         features = features.astype(bool)
         
-        return network.from_nodes_and_edgelist(self.nodes, features)
+        return network.Network(self.nodes, features)
+
+    @property
+    def entropy(self):
+        # entropy = -scores*log(scores)
+        # but since scores are in log, 
+        # entropy = -exp(scores)*scores
+        lscores = rescale_logvalues(self.scores)
+        return -N.exp(lscores)*lscores
+
+ 
 

@@ -22,10 +22,6 @@ class Learner(object):
         self.__dict__.update(kw)
 
     def _alter_network_randomly_and_score(self):
-        self._alter_network_randomly()
-        return self.scorer.score_network()
-
-    def _alter_network_randomly(self):
         n_nodes = self.data.variables.size
 
         # continue making changes and undoing them till we get an acyclic network
@@ -34,17 +30,17 @@ class Learner(object):
         
             if (startnode, endnode) in self.network.edges:
                 # start_node -> end_node already exists, so reverse it.    
-                add,remove = (startnode, endnode), (endnode, startnode)
+                add,remove = [(startnode, endnode)], [(endnode, startnode)]
             elif (endnode, startnode) in self.network.edges:
                 # start_node <- end_node exists, so remove it
-                add,remove = None, (endnode, startnode)
+                add,remove = [], [(endnode, startnode)]
             else:
                 # start_node and end_node unconnected, so connect them
-                add,remove =  (startnode, endnode), None
+                add,remove =  [(startnode, endnode)], []
             
             try:
-                score = self.scorer.alter_and_score_network(add=add, remove=remove)
-            except:
+                return self.scorer.alter_and_score_network(add=add, remove=remove)
+            except scorer.CyclicNetworkError:
                 continue
 
         # Could not find a valid network after 100 attempts  

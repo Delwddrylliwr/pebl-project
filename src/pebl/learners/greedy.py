@@ -47,7 +47,7 @@ class GreedyLearner(Learner):
         self.stats.restarts += 1
         self.scorer.randomize_network()
         
-        # reset all stats except iterations and runtime
+        # set the default best score
         self.stats.best_score = self.scorer.score_network()
 
         # continue learning till the stopping criteria is met (function returns True)

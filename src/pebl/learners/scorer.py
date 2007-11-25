@@ -1,6 +1,6 @@
 from pebl.util import *
 from numpy import *
-from pebl import data, distributions
+from pebl import data, distributions, prior
 import random as stdlib_random
 
 random.seed()
@@ -12,7 +12,7 @@ class Scorer(object):
     def __init__(self, network_, pebldata, prior_=None, subscorer=None):
         self.network = network_
         self.data = pebldata
-        self.prior = prior_
+        self.prior = prior_ or prior.NullPrior()
         
         self.datavars = range(self.data.variables.size)
         self.score = None
@@ -23,7 +23,7 @@ class Scorer(object):
             self.subscorer = subscorer or MissingDataScorer
 
     def _globalscore(self, localscores):
-        return sum(localscores)
+        return sum(localscores) + self.prior.log_likelihood(self.network)
     
     def _cpd(self, node):
         return distributions.MultinomialDistribution(
@@ -259,7 +259,7 @@ class MissingDataScorer(Scorer):
     def score_network(self, net=None, stopping_criteria=None, gibbs_state=None, save_state=False):
         self.network = net or self.network
 
-        # initialize cpds and data_dirtynodes
+        # initialize cpds and data_dirtynodes 
         self.cpds = [None for i in self.datavars]
         self.data_dirtynodes = set(self.datavars)
         
@@ -447,7 +447,7 @@ class MaximumEntropyMissingDataScorer(MissingDataScorer):
         self.score, numscores = self._calculate_score(chosenscores, gibbs_state)
 
         self.chosenscores = chosenscores
-
+        
         # save state of gibbs sampler?
         if save_state:
             self.gibbs_state = GibbsSamplerState(

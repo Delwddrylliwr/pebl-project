@@ -102,7 +102,7 @@ class EdgeList(object):
                 return True
 
     def __eq__(self, other):
-        return self.__hash__() == other.__hash__()
+        return self.nodes == other.nodes and self.edges == other.edges
 
 class SparseEdgeList(EdgeList):
     """
@@ -243,7 +243,7 @@ class MatrixEdgeList(EdgeList):
             return False
     
     def __eq__(self, other):
-        return self.adjacency_matrix.__hash__() == other.adjacency_matrix.__hash__()
+        return (self.adjacency_matrix == other.adjacency_matrix).all()
 
 
 class Network(object):
@@ -252,7 +252,7 @@ class Network(object):
     def __init__(self, nodes, edges=None):
         self.nodes = nodes
         
-        if edges and isinstance(edges, N.ndarray):
+        if isinstance(edges, ndarray):
             self.edges = MatrixEdgeList(adjacency_matrix=edges)
         else:
            self.edges = MatrixEdgeList(num_nodes=len(self.nodes))
