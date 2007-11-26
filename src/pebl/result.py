@@ -1,11 +1,9 @@
-from posterior import Posterior
 import time
 import socket
 from bisect import insort
-from heapq import heappush, heapreplace
-from util import flatten
 from copy import deepcopy
 
+import posterior
 
 class _ScoredNetworkList(object):
     def __init__(self, size):
@@ -59,5 +57,5 @@ class LearnerResult:
 
     @property
     def posterior(self):
-        return Posterior(self.nodes, sorted_scored_networks=self.networks)
+        return posterior.from_sorted_scored_networks(self.nodes, self.networks)
 

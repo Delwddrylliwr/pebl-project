@@ -7,20 +7,11 @@ from pebl import network
 from pebl.util import *
 import pydot
 
-class Posterior():
-    def __init__(self, nodes, adjacency_matrices=[], scores=[], sorted_scored_networks=[]):
+class Posterior(object):
+    def __init__(self, nodes, sorted_adjacency_matrices, sorted_scores):
         self.nodes = nodes
-
-        if len(adjacency_matrices) and len(scores):
-            adjacency_matrices_and_scores = sorted(izip(adjacency_matrices, scores), cmp=lambda x,y:cmp(x[1],y[1]), reverse=True)
-            adjacency_matrices, scores = unzip(adjacency_matrices_and_scores)
-
-            self.adjacency_matrices = N.array(adjacency_matrices)
-            self.scores = N.array(scores)
-
-        elif len(sorted_scored_networks):
-            self.adjacency_matrices = N.array([n.edgelist.adjacency_matrix for n in sorted_scored_networks])
-            self.scores = N.array([n.score for n in sorted_scored_networks])
+        self.adjacency_matrices = sorted_adjacency_matrices
+        self.scores = sorted_scores
 
     def _consensus_matrix(self):
         norm_scores = normalize(N.exp(rescale_logvalues(self.scores)))
@@ -61,4 +52,23 @@ class Posterior():
         # entropy = -exp(scores)*scores
         lscores = rescale_logvalues(self.scores)
         return -N.sum(N.exp(lscores)*lscores)
+
+
+def from_unsorted_matrices_and_scores(nodes, adjacency_matrices, scores):
+    adjacency_matrices_and_scores = sorted(izip(adjacency_matrices, scores), cmp=lambda x,y:cmp(x[1],y[1]), reverse=True)
+    adjacency_matrices, scores = unzip(adjacency_matrices_and_scores)
+
+    return Posterior(
+        nodes,
+        N.array(adjacency_matrices),
+        N.array(scores)
+    )
+
+def from_sorted_scored_networks(nodes, networks):
+    return Posterior(
+        nodes,
+        N.array([n.edgelist.adjacency_matrix for n in networks]),
+        N.array([n.score for n in networks])
+    )
+
 
