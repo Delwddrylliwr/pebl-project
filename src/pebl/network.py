@@ -1,36 +1,37 @@
-"""Classes for representing networks.
+"""Classes for representing networks and functions to create/modify them.
 
-A pebl network is a collection of nodes and directed edges between nodes.  Nodes and 
-edges, while related, are unbound to each other and edges can be copied from one network 
-to another with different nodes without any problems.
+A pebl network is a collection of nodes and directed edges between nodes.  
 
+Nodes are a list of pebl.data.Variable instances.
 Edges are stored in EdgeList instances.  This module provides two implementations,
-L{MatrixEdgeList} for small networks and L{SparseEdgeList} for large, sparse networks. Both
-offer the same functionality with different performance characteristics.
+MatrixEdgeList for small networks and SparseEdgeList for large, sparse
+networks. Both offer the same functionality with different performance
+characteristics.
 
-Functions and methods accept and return nodes as numbers representing their indices and edges
-as tuples of integers corresponding to (srcnode, destnode).
+Functions and methods accept and return nodes as numbers representing their
+indices and edges as tuples of integers corresponding to (srcnode, destnode).
 
 """
 
-# for randomize__OLD__()
-# import as stdlib_random to avoid name clash with numpy.random
-import random as stdlib_random
-stdlib_random.seed()
-
 import re
-import tempfile
 import tempfile
 import subprocess
 import os
+
 import pydot
+import numpy as N
 
-from numpy import zeros, nonzero, all, linalg, random, identity, invert, signbit, iscomplex, any, ndarray
-
-import data, distributions
 from util import *
+from networkutil import *
+import config
+from config import StringParameter, oneof
 
-class EdgeList(object):    
+#
+# Classes for storing collection of edges
+#
+class EdgeList(object):   
+    """Abstract base class for collection of edges."""
+
     def __init__(self, num_nodes=0): pass
 
     def clear(self): 
@@ -38,12 +39,11 @@ class EdgeList(object):
         pass
     
     def add(self, edge):
-        """Add an edgeto the list.
-        
-       """
+        """Add an edge to the list."""
         pass
     
     def add_many(self, edges):
+        """Add multiple edges."""
         for edge in edges:
             self.add(edge)
 
@@ -56,15 +56,25 @@ class EdgeList(object):
         pass
         
     def remove_many(self, edges):
+        """Remove multiple edges."""
         for edge in edges:
             self.remove(edge)
 
     def incoming(self, node): 
-        """Return list of nodes (as node indices) that have an edge to given node."""
+        """Return list of nodes (as node indices) that have an edge to given node.
+        
+        Method is also aliased as parents().
+        
+        """
+
         pass
 
     def outgoing(self, node): 
-        """Return list of nodes (as node indices) that have an edge from given node."""
+        """Return list of nodes (as node indices) that have an edge from given node.
+        
+        Method is also aliased as children().
+
+        """
         pass
 
     children = outgoing
@@ -74,23 +84,19 @@ class EdgeList(object):
         """Iterate through the edges in this edgelist.
 
         Sample usage:
-        
-        for edge in edgelist: print edge
+        for edge in edgelist: 
+            print edge
 
         """
         pass
-
-    @property
-    def numedges(self):
-        return len(list(self))
 
     def __contains__(self, edge):
         """Check whether an edge exists in the edgelist.
 
 
         Sample usage:
-        
-        if (4,5) in edgelist: print "edge exists!"
+        if (4,5) in edgelist: 
+            print "edge exists!"
 
         """
 
@@ -104,16 +110,19 @@ class EdgeList(object):
     def __eq__(self, other):
         return self.nodes == other.nodes and self.edges == other.edges
 
+
 class SparseEdgeList(EdgeList):
     """
     Maintains list of edges in two lists (for incoming and outgoing edges).
 
     Performance characteristics:
         - Edge insertion: O(1)
-        - Edge retrieval: O(n) (*i think)
+        - Edge retrieval: O(n)
     
     If we didn't maintain two indices, retrieving an edge could take O(n^2) instead of O(n).
     
+    For method documentation, see documentation for EdgeList.
+
     """
 
     def __init__(self, num_nodes=0):
@@ -121,8 +130,7 @@ class SparseEdgeList(EdgeList):
         self._incoming = [[] for i in xrange(num_nodes)] 
 
     def _resize(self, num_nodes):
-        """Resize the internal indices.
-        """
+        """Resize the internal indices."""
 
         self._incoming.extend([] for i in xrange(len(self._incoming), num_nodes))
         self._outgoing.extend([] for i in xrange(len(self._outgoing), num_nodes))
@@ -164,7 +172,7 @@ class SparseEdgeList(EdgeList):
     @property
     def adjacency_matrix(self):
         size = len(self._outgoing)
-        edges = zeros((size, size), dtype=bool)
+        edges = N.zeros((size, size), dtype=bool)
        
         selfedges = list(self)
         edges[unzip(selfedges)] = True
@@ -182,13 +190,15 @@ class SparseEdgeList(EdgeList):
 
 class MatrixEdgeList(EdgeList):
     """
-    Maintains list of edges in a boolean matrix.
+    Maintains list of edges in a boolean adjacency matrix.
 
     Performance characteristics:
         - Edge insertion: O(1)
         - Edge retrieval: O(1)
 
     Memory requirements might be deemed too high for sparse networks with a large number of nodes.
+    
+    For method documentation, see documentation for EdgeList.
 
     """
 
@@ -196,13 +206,12 @@ class MatrixEdgeList(EdgeList):
         if adjacency_matrix is not None:
             self.adjacency_matrix = adjacency_matrix
         else:
-            self.adjacency_matrix = zeros((num_nodes, num_nodes), dtype=bool)
+            self.adjacency_matrix = N.zeros((num_nodes, num_nodes), dtype=bool)
         
     def _resize(self, num_nodes):
-        newedges = zeros((num_nodes, num_nodes), dtype=bool)
+        newedges = N.zeros((num_nodes, num_nodes), dtype=bool)
         old_num_nodes = self.adjacency_matrix.shape[0]
 
-        # TODO: don't do nested loops. use some numpy func to do this.
         for i in range(old_num_nodes):
             for j in range(old_num_nodes):
                 newedges[i][j] = self.adjacency_matrix[i][j]
@@ -210,7 +219,7 @@ class MatrixEdgeList(EdgeList):
         self.adjacency_matrix = newedges
 
     def clear(self):
-        self.adjacency_matrix = zeros(self.adjacency_matrix.shape, dtype=bool)
+        self.adjacency_matrix = N.zeros(self.adjacency_matrix.shape, dtype=bool)
 
     def add(self, edge):
         self.adjacency_matrix[edge] = True
@@ -222,18 +231,18 @@ class MatrixEdgeList(EdgeList):
             pass # if edge does not exist, ignore error silently.
 
     def incoming(self, node):
-        inc = nonzero(self.adjacency_matrix[:,node].flatten())
+        inc = N.nonzero(self.adjacency_matrix[:,node].flatten())
         return inc[0].tolist()
 
     def outgoing(self, node):
-        outg = nonzero(self.adjacency_matrix[node].flatten())
+        outg = N.nonzero(self.adjacency_matrix[node].flatten())
         return outg[0].tolist()
     
     parents = incoming
     children = outgoing
 
     def __iter__(self):
-        for src, dest in zip(*nonzero(self.adjacency_matrix)):
+        for src, dest in zip(*N.nonzero(self.adjacency_matrix)):
             yield (src, dest)
     
     def __contains__(self, edge): 
@@ -245,93 +254,103 @@ class MatrixEdgeList(EdgeList):
     def __eq__(self, other):
         return (self.adjacency_matrix == other.adjacency_matrix).all()
 
-
+#
+# Pebl's network class
+#
 class Network(object):
-    """ A network is essentially just a collection of edges between nodes."""
+    """ A network is a collection of edges between nodes."""
     
+    #
+    # Parameters
+    #
+    cyclechecker = StringParameter(
+        'network.cyclechecker',
+        'Algorithm to determine whether a network contains a cycle.',
+        oneof('dfs', 'eigenvalue'),
+        'dfs'
+    )
+
+    randomizer = StringParameter(
+        'network.randomizer',
+        'Algorithm for generating radmon networks.',
+        oneof('naive', 'chain'),
+        'naive'
+    )
+   
+    #
+    # Class variables
+    #
+    cyclecheckers = {
+        'dfs': DFSCycleChecker,
+        'eigenvalue': EigenValueCycleChecker
+    }
+
+    randomizers = {
+        'naive': NaiveNetworkRandomizer
+    }
+
+
+    #
+    # Public methods
+    #
     def __init__(self, nodes, edges=None):
-        self.nodes = nodes
+        """Creates a Network.
+
+        nodes is a list of pebl.data.Variable instances.
+        edges can be:
+            * any EdgeList instance
+            * a list of edge tuples
+            * an adjacency matrix (as boolean numpy.ndarray)
+            * string representation (see Network.as_string() for format)
+
+        """
         
-        if isinstance(edges, ndarray):
+        self.nodes = nodes
+       
+        # add edges
+        if isinstance(edges, EdgeList):
+            self.edges = edges
+        elif isinstance(edges, N.ndarray):
             self.edges = MatrixEdgeList(adjacency_matrix=edges)
         else:
-           self.edges = MatrixEdgeList(num_nodes=len(self.nodes))
-           if isinstance(edges, list):
-               self.edges.add_many(edges)
+            self.edges = MatrixEdgeList(num_nodes=len(self.nodes))
+            if isinstance(edges, list):
+                self.edges.add_many(edges)
+            elif isinstance(edges, str):
+                edges = edges.split(';')
+                edges = [tuple([int(n) for n in e.split(',')]) for e in edges]
+                self.edges.add_many(edges)
 
+        # select implementation for self.is_acyclic()
+        cyclechecker = config.get('network.cyclechecker')
+        self.is_acyclic = self.cyclecheckers[cyclechecker](self)
+        
+        # select implementation for self.randomize()
+        randomizer = config.get('network.randomizer')
+        self.randomize = self.randomizers[randomizer](self)
+        
+    
+    # TODO: test
+    def copy(self):
+        """Returns a copy of this network."""
+        return Network(self.nodes, self.edges.adjacency_matrix.copy())    
+       
 
-    def is_acyclic__eigval_implementation(self):
-        # first check for self-loops (1 along diagonal)
-        if any(self.edges.adjacency_matrix.diagonal()):
-            return False
+    def layout(self, width=400, height=400, 
+               dotpath="/Applications/Graphviz.app/Contents/MacOS/dot"): 
+        """Determines network layout using Graphviz's dot algorithm.
 
-        # network is acylcic IFF all eigenvalues of adjacency matrix are positive and real
-        try:
-            ev = linalg.eigvals(self.edges.adjacency_matrix)
-        except:
-            # the eigenvalue calculation sometimes fails to converge.. 
-            return self.is_acyclic__dfs_implementation()
+        width and height are in pixels.
+        dotpath is the path to the dot application.
 
-        if any(ev[iscomplex(ev) == True]):
-            # complex eigenvalues, so not acyclic
-            return False
-        else:
-            return not any(ev[signbit(ev) == True])
+        The resulting node positions are saved in network.node_positions.
 
-    def is_acyclic__dfs_implementation(self, startnodes=[]):
-        """ 
-        Checks whether the network contains any cycles/loops.
         """
-        startnodes = startnodes or range(len(self.nodes))
-        return self._is_acyclic__dfs_implementation(startnodes)
-        
-    def _is_acyclic__dfs_implementation(self, startnodes, visitednodes=[]):
-        startnodes = ensure_list(startnodes)
-        
-        for node in startnodes:
-            if node in visitednodes:
-                # this node is being visited twice, therefore cycle exists
-                return False
-            else:
-                # no cycle yet, check children
-                if not self._is_acyclic__dfs_implementation(self.edges.children(node), visitednodes + [node]):
-                    return False
 
-        # got here without returning false, so no cycles below start_nodes
-        return True
- 
-    # default implementation for is_acyclic()
-    is_acyclic = is_acyclic__eigval_implementation
+        # does the dot program exist?
+        if not os.path.exists(dotpath):
+            raise Exception("Cannot find the dot program at %s." % dotpath)
 
-    def randomize__naive_implementation(self):
-        n_nodes = len(self.nodes)
-        density = 1.0/n_nodes
-
-        # TODO: how big should this be?
-        max_attempts = 50
-
-        for attempt in xrange(max_attempts):
-            # create an adjacency matrix with given density
-            adjmat = random.rand(n_nodes, n_nodes)
-            adjmat[adjmat >= (1.0-density)] = 1
-            adjmat[adjmat < 1] = 0
-            
-            # remove self-loop edges (those along the diagonal)
-            adjmat = invert(identity(n_nodes).astype(bool))*adjmat
-            
-            # set the adjaceny matrix and check for acyclicity
-            self.edges.adjacency_matrix = adjmat.astype(bool)
-            if self.is_acyclic():
-                return
-
-        # got here without finding a single acyclic network.
-        # so try with a less dense network
-        return self.randomize(density/2)
-
-    # default implementation for randomize
-    randomize = randomize__naive_implementation
-
-    def layout_using_dot(self, width=400, height=400, dotpath="/Applications/Graphviz.app/Contents/MacOS/dot"): 
         tempdir = tempfile.mkdtemp(prefix="pebl")
         dot1 = os.path.join(tempdir, "1.dot")
         dot2 = os.path.join(tempdir, "2.dot")
@@ -341,49 +360,66 @@ class Network(object):
         dotgraph = pydot.graph_from_dot_file(dot2)
       
         nodes = (n for n in dotgraph.get_node_list() if n.get_pos())
-        self.node_positions = [[int(i) for i in node.get_pos().split(',')] for node in nodes] 
+        self.node_positions = [[int(i) for i in n.get_pos().split(',')] for n in nodes] 
 
-    layout = layout_using_dot
 
-    def as_sparse_string(self):
-        return ";".join([",".join([str(node) for node in edge]) for edge in list(self.edges)])
-        
+    def as_string(self):
+        """Returns the sparse string representation of network.
+
+        If network has edges (2,3) and (1,2), the sparse string representation
+        is "2,3;1,2".
+
+        """
+
+        return ";".join([",".join([str(n) for n in edge]) for edge in list(self.edges)])
+       
+    
     def as_dotstring(self):
-        nodename = lambda n: getattr(n, 'name', n.id)
+        """Returns network as a dot-formatted string"""
 
-        str = "digraph G {\n"
-        for node in self.nodes:
-            str += "\t\"%s\";\n" % nodename(node)
+        nodes = self.nodes
 
-        for (src,dest) in self.edges:
-            str += "\t\"%s\" -> \"%s\";\n" % (nodename(self.nodes[src]), nodename(self.nodes[dest]))
-        str += "}\n"
-        
-        return str
+        return "\n".join(
+            ["digraph G {"] + 
+            ["\t\"%s\";" % n.name for n in nodes] + 
+            ["\t\"%s\" -> \"%s\";" % (nodes[src].name, nodes[dest].name) 
+                for src,dest in self.edges] +
+            ["}"]
+        )
+ 
 
     def as_dotfile(self, filename):
+        """Saves network as a dot file."""
+
         f = file(filename, 'w')
         f.write(self.as_dotstring())
         f.close()
 
+
     def as_pydot(self):
+        """Returns a pydot instance for the network."""
+
         return pydot.graph_from_dot_data(self.as_dotstring())
 
+
     def as_image(self, filename, decorator=lambda x: x):
+        """Creates an image (PNG format) for the newtork.
+
+        decorator is a function that accepts a pydot graph, modifies it and
+        returns it.  decorators can be used to set visual appearance of
+        networks (color, style, etc).
+
         """
-        Creates an image (PNG format) for the newtork using Graphviz for layout.
-
-        decorator is a function that accepts a pydot graph, modifies it and returns it.
-        decorators can be used to set visual appearance of networks (color, style, etc).
-
-        """
-
+        
         g = self.as_pydot()
         g = decorator(g)
         g.write_png(filename, prog="dot")
-        
+
+
+#        
 # Factory functions
+#
 def fromdata(data_):
-    net = Network(data_.variables)
-    return net
+    """Creates a network from the variables in the dataset."""
+    return Network(data_.variables)
 

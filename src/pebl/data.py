@@ -1,60 +1,196 @@
-"""A Class for representing datasets and functions to create and manipulate them."""
+"""Classes and functions for working with datasets."""
 
+from __future__ import with_statement
 import re
-import numpy as N
-from itertools import groupby
-from util import *
 import copy
+from itertools import groupby
 
+import numpy as N
+
+from pebl.util import *
+from pebl import discretizer
+from pebl import config
+
+#
+# Module parameters
+#
+_pfilename = config.StringParameter(
+    'data.filename',
+    'File to read data from.',
+    config.fileexists(),
+)
+
+_ptext = config.StringParameter(
+    'data.text',
+    'The text of a dataset included in config file.',
+    default=''
+)
+
+_pdiscretize = config.IntParameter(
+    'data.discretize',
+    """Number of bins used to discretize data. Specify 0 ot -1 to indicate that
+    data should not be discretized.""",
+    default=0
+)
+
+#
 # Exceptions
-class ParsingError(Exception): pass
+#
+class ParsingError(Exception): 
+    """Error encountered while parsing an ill-formed datafile."""
+    pass
 
 class IncorrectArityError(Exception):
-    msg = "The arities specified in the data are incorrect."
+    """Error encountered when the datafile speifies an incorrect variable arity.
 
-# Variable and Sample Annotations
-class Annotation(Struct):
+    If variable arity is specified, it should be greater than the number of
+    unique observation values for the variable.
+
+    """
+    
+    def __init__(self, errors):
+        self.errors = errors
+
     def __repr__(self):
-        name = getattr(self, 'name', self.id)
-        return "<%s: %s>" % (self.__class__.__name__,  name)
+        msg = "Incorrect arity specified for some variables.\n"
+        for v,uniquevals in errors:
+            msg += "Variable %s has arity of %d but %d unique values.\n" % \
+                   (v.name, v.arity, uniquevals)
 
-class Variable(Annotation): pass
-class Sample(Annotation): pass
+class ClassVariableError(Exception):
+    msg = """Data for class variables must include only the labels specified in
+    the variable annotation."""
 
-class PeblData(object):
-    def __init__(self, observations, missing=None, interventions=None, variables=None, samples=None):
+
+#
+# Variables and Samples
+#
+class Annotation(object):
+    """Additional information about a sample or variable."""
+
+    def __init__(self, name, *args):
+        # *args is for subclasses
+        self.name = str(name)
+
+    def __repr__(self):
+        return "<%s: %s>" % (self.__class__.__name__,  self.name)
+
+class Sample(Annotation):
+    """Additional information about a sample."""
+    pass 
+
+class Variable(Annotation): 
+    """Additional information about a variable."""
+    arity = -1
+
+class ContinuousVariable(Variable): 
+    """A variable from a continuous domain."""
+    def __init__(self, name, param):
+        self.name = str(name)
+
+class DiscreteVariable(Variable):
+    """A variable from a discrete domain."""
+    def __init__(self, name, param):
+        self.name = str(name)
+        self.arity = int(param)
+
+class ClassVariable(DiscreteVariable):
+    """A labeled, discrete variable."""
+    def __init__(self, name, param):
+        self.name = str(name)
+        self.labels = [l.strip() for l in param.split(',')]
+        self.label2int = dict((l,i) for i,l in enumerate(self.labels))
+        self.arity = len(self.labels)
+
+#
+# Main class for dataset
+#
+class Dataset(object):
+    """Class for representing datasets.
+
+    A Dataset consists of the following data structures which are all
+    numpy.ndarray instances:
+
+     - observations: a 2D matrix of observed values. 
+        - dimension 1 is over samples, dimension 2 is over variables.
+        - observations[i,j] is the observed value for jth variable in the ith
+          sample.
+
+    - missing: a 2D binary mask for missing values
+        - missing[i,j] = 1 IFF observation[i,j] is missing
+    
+    - interventions: a 2D binary mask for interventions
+        - interventions[i,j] = 1 IFF the jth variable was intervened upon in
+          the ith sample.
+    
+    - variables,samples: 1D array of variable or sample annotations
+    
+    This class provides a few public methods to manipulate datasets; one can
+    also use numpy functions/methods directly.
+
+    """
+
+    def __init__(self, observations, missing=None, interventions=None, 
+                 variables=None, samples=None):
+        """Create a Dataset instance.
+
+         - The only required argument is observations (a 2D numpy array).
+         - If missing or interventions are not specified, they are assumed to
+           be all zeros (no missing values and no interventions).
+         - If variables or samples are not specified, appropriate Variable or
+           Sample annotations are created with only the name attribute.
+
+        """
+
         self.observations = observations
         self.missing = missing
         self.interventions = interventions
         self.variables = variables
         self.samples = samples
 
-        # With numpy.ndarray object X, we can't do 'if not X' to check the truth value 
-        # because it raises an exception. So, we must use the non-pythonic 'if X is None'
+        # With a numpy array X, we can't do 'if not X' to check the
+        # truth value because it raises an exception. So, we must use the
+        # non-pythonic 'if X is None'
         
+        obs = observations
         if missing is None:
-            self.missing = N.zeros(observations.shape, dtype=bool)
+            self.missing = N.zeros(obs.shape, dtype=bool)
         if interventions is None:
-            self.interventions = N.zeros(observations.shape, dtype=bool)
+            self.interventions = N.zeros(obs.shape, dtype=bool)
         if variables is None:
-            self.variables = N.array([Variable(id=str(i)) for i in xrange(observations.shape[1])])
+            self.variables = N.array([Variable(str(i)) for i in xrange(obs.shape[1])])
         if samples is None:
-            self.samples = N.array([Sample(id=str(i)) for i in xrange(observations.shape[0])])
+            self.samples = N.array([Sample(str(i)) for i in xrange(obs.shape[0])])
 
-        # guess variable arities if they're not specified (if discretized data)
-        if observations.dtype is N.dtype('byte'):
-            if not hasattr(self.variables[0], 'arity'):
-                self._guess_arities()
-            else:
-                self._check_arities()
 
+        # do sanity checks on data
+        self._check_arities()
+        
+
+    # 
+    # public methods
+    # 
     def subset(self, variables=None, samples=None):
-        """Return a subset of the dataset."""
+        """Returns a subset of the dataset (and metadata).
+        
+        Specify the variables and samples for creating a subset of the data.
+        variables and samples should be a list of ids. If not specified, it is
+        assumed to be all variables or samples. 
+
+        Some examples:
+        
+            - d.subset([3], [4])
+            - d.subset([3,1,2])
+            - d.subset(samples=[5,2,7,1])
+        
+        Note: order matters! d.subset([3,1,2]) != d.subset([1,2,3])
+
+        """
 
         variables = variables if variables is not None else range(self.variables.size)
         samples = samples if samples is not None else range(self.samples.size)
 
-        return PeblData(
+        return Dataset(
             self.observations[N.ix_(samples,variables)],
             self.missing[N.ix_(samples,variables)],
             self.interventions[N.ix_(samples,variables)],
@@ -62,92 +198,190 @@ class PeblData(object):
             self.samples[samples]
         )
 
+
+    # TODO: test
+    def subset_byname(self, variables=None, samples=None):
+        """Returns a subset of the dataset (and metadata).
+
+        Same as Dataset.subset() except that variables and samples can be
+        specified by their names.  
+        
+        Some examples:
+
+            - d.subset(variables=['shh', 'genex'])
+            - s.subset(samples=["control%d" % i for i in xrange(10)])
+
+        """
+
+        vardict = dict((v.name, i) for i,v in enumerate(self.variables))
+        sampledict = dict((s.name, i) for i,s in enumerate(self.samples))
+        
+        # if name not found, we let the KeyError be raised
+        variables = [vardict[v] for v in variables] if variables else variables
+        samples = [sampledict[s] for s in samples] if samples else samples
+
+        return self.subset(variables, samples)
+
+
+
+    def discretize(self, includevars=None, excludevars=[], numbins=3):
+        """Discretize (or bin) the data in-place.
+
+        This method is just an alias for pebl.discretizer.maximum_entropy_discretizer()
+        See the module documentation for pebl.discretizer for more information.
+
+        """
+        self.original_observations = self.observations.copy()
+        self = discretizer.maximum_entropy_discretize(
+           self, 
+           includevars, excludevars, 
+           numbins
+        ) 
+
+
+    def tofile(self, filename):
+        """Write the data and metadata to file in a tab-delimited format."""
+        
+        with file(filename, 'w') as f:
+            f.write(self.tostring())
+
+
+    def tostring(self, linesep='\n'):
+        """Return the data and metadata as a string in a tab-delimited format."""
+
+        def dataitem(row, col):
+            val = "X" if self.missing[row,col] else str(self.observations[row,col])
+            val += "!" if self.interventions[row,col] else ''
+            return val
+        
+        def variable(v):
+            name = v.name
+
+            if isinstance(v, ClassVariable):
+                return "%s,class(%s)" % (name, ','.join(v.labels))    
+            elif isinstance(v, DiscreteVariable):
+                return "%s,discrete(%d)" % (name, v.arity)
+            elif isinstance(v, ContinuousVariable):
+                return "%s,continuous" % name
+            else:
+                return v.name
+
+        # ---------------------------------------------------------------------
+
+        # python strings are immutable, so string concatenation is expensive!
+        # preferred way is to make list of lines, then use one join.
+        lines = []
+
+        # add variable annotations
+        lines.append("\t".join([variable(v) for v in self.variables]))
+        
+        # format data
+        nrows,ncols = self.shape
+        d = [[dataitem(r,c) for c in xrange(ncols)] for r in xrange(nrows)]
+        
+        # add sample names if we have them
+        if hasattr(self.samples[0], 'name'):
+            d = [[s.name] + row for row,s in zip(d,self.samples)]
+
+        # add data to lines
+        lines.extend(["\t".join(row) for row in d])
+        
+        return linesep.join(lines)
+
+
+    #
+    # public propoerties
+    #
     @property
     def shape(self):
+        """The shape of the dataset as (number of samples, number of variables)."""
         return self.observations.shape
 
-    @property
-    def arities(self):
-        return [v.arity for v in self.variables]
 
-    def _1d_where(self, arr, predicate):
-        return [i for i,a in enumerate(arr) if predicate(a)]
-
-    def variables_where(self, predicate):
-        return self._1d_where(self.variables, predicate)
-
-    def samples_where(self, predicate):
-        return self._1d_where(self.samples, predicate)
-
+    #
+    # private methods/properties
+    #
     def _guess_arities(self):
-        """Tries to guess arity of variables by counting the number of unique observations."""
+        """Guesses variable arity by counting the number of unique observations."""
 
         for col,var in enumerate(self.variables):
             var.arity = N.unique(self.observations[:,col]).size
 
+
     def _check_arities(self):
-        """Checks, for eavh variable, whether the specified airty >= number of unique observations.
+        """Checks whether the specified airty >= number of unique observations.
+
+        The check is only performed for discrete variables.
 
         If this check fails, the CPT and other data structures would fail.
-        So, we should raise error while loading the data. Fail Early and Explicity!
+        So, we should raise error while loading the data. Fail Early and Explicitly!
+
         """
         
-        match =  all(var.arity >= N.unique(self.observations[:,col]).size 
-                      for col,var in enumerate(self.variables))
+        errors = [] 
+        for col,v in enumerate(self.variables):
+            if isinstance(v, DiscreteVariable):
+                uniquevals = N.unique(self.observations[:,col]).size
+                if v.arity < uniquevals:
+                    errors.append((v, uniquevals))
 
-        if not match:
-            raise IncorrectArityError
-            
+        if errors:
+            raise IncorrectArityError(errors)
 
-    
-    def tofile(self, filename):
-        """Write the data and metadata to file in a tab-delimited format."""
-        
-        f = file(filename, 'w')
-        f.write(self.tostring())
-        f.close()
-    
-    def _NOT_READY_tostring(self, linesep='\n'):
-        """Return the data and metadata as a String."""
 
-        def format_item(row, col):
-            val = "X" if self.missing[row,col] else self.observations[row,col]
-            val += "!" if self.interventions[row,col] else ''
-            return val
-        
-        lines = []
-        # STEPS:
-        #   * determine annotations by inspecting variables.dtype, samples.dtype
-        #   * add control lines based on the annotations
-        #   * ass data using format_item
-
-        return linesep.join(lines)
-
-example_data = """
-%variable.name[str]=foo\tbar\tfoobar\tbaz\tfoobaz
-%variable.arity[int]=2\t3\t3\t2\t3
-%sample.adult_sample[bool]=0\t1\t1\t0
-0\t1\t0\t1\t0
-1\t0\t2\tx\t0!
-2\t1\t0!\t1!\tx
-!0\tX\tx\t0\t1
-"""
-
-# Functions for dealing with data
+#
+# Factory Functions
+#
 def fromfile(filename):
-    f = file(filename)
-    d = fromstring(f.read())
-    f.close()
+    """Parse file and return a Dataset instance.
 
-    return d
+    The data file is expected to conform to the following format
+    ------------------------------------------------------------
 
-def fromstring(stringrep):
-    # parse a data item (examples: '5' '2.5', 'X', '5!')
-    def parse_dataitem(item):
+        - comment lines begin with '#' and are ignored.
+        - The first non-comment line *must* specify variable annotations
+          separated by tab characters.
+        - data lines specify the data values separated by tab characters.
+        - data lines *can* include sample names
+    
+    A data value specifies the observed numeric value, whether it's missing and
+    whether it represents an intervention:
+
+        - An 'x' or 'X' indicate that the value is missing
+        - A '!' before or after the numeric value indicates an intervention
+
+    Variable annotations specify the name of the variable and, *optionally*,
+    the data type.
+
+    Examples include:
+
+        - Foo                     : just variable name
+        - Foo,continuous          : Foo is a continuous variable
+        - Foo,discrete(3)         : Foo is a discrete variable with arity of 3
+        - Foo,class(normal,cancer): Foo is a class variable with arity of 2 and
+                                    values of either normal or cancer.
+
+    """
+    
+    with file(filename) as f:
+        return fromstring(f.read())
+
+
+def fromstring(stringrep, fieldsep='\t'):
+    """Parse the string representation of a dataset and return a Dataset instance.
+    
+    See the documentation for fromfile() for information about file format.
+    
+    """
+
+    # parse a data item (examples: '5' '2.5', 'X', 'X!', '5!')
+    def dataitem(item, v):
         item = item.strip()
 
         intervention = False
         missing = False
+        
+        # intervention?
         if item[0] == "!":
             intervention = True
             item = item[1:]
@@ -155,145 +389,152 @@ def fromstring(stringrep):
             intervention = True
             item = item[:-1]
 
+        # missing value?
         if item[0] in ('x', 'X') or item[-1] in ('x', 'X'):
             missing = True
-            item = "0"
+            item = "0" if not isinstance(v, ClassVariable) else v.labels[0]
 
-        # first try converting to int, then to float
-        try:
-            value = int(item)
-        except ValueError:
+        # convert to expected data type
+        val = item
+        if isinstance(v, ClassVariable):
             try:
-                value = float(item)
-            except:
-                raise ValueError("Error parsing value: '%s'. It doesn't seem to be an int or a float." % item)
+                val = v.label2int[val]
+            except KeyError:
+                raise ClassVariableError()
 
-        return (value, missing, intervention)
+        elif isinstance(v, DiscreteVariable):
+            try:
+                val = int(val)
+            except ValueError:
+                msg = "Invalid value for discrete variable %s: %s" % (v.name, val)
+                raise ParsingError(msg)
 
-    # parse metadata line
-    metadata_re = re.compile("([^\.]*\.)?(.*)\s*\[\s*(.*)\s*\]\s*=\s*(.*)$")
-    bool_converter = lambda x: bool(int(x))
-    
-    def parse_metadata(line):
-        """Parses metadata annotations like '%variable.arity[int]=2\t3\t2\t2'"""
+        elif isinstance(v, ContinuousVariable):
+            try:
+                val = float(val)
+            except ValueError:
+                msg = "Invalid value for continuous variable %s: %s" % (v.name, val)
+                raise ParsingError(msg)
+        else:
+            # if not specified, try parsing as float or int
+            if '.' in val:
+                try:
+                    val = float(val)
+                except:
+                    msg = "Cannot convert value %s to a float." % val
+                    raise ParsingError(msg)
+            else:
+                try:
+                    val = int(val)
+                except:
+                    msg = "Cannot convert value %s to an int." % val
+                    raise ParsingError(msg)
+
+        return (val, missing, intervention)
+
+
+    dtype_re = re.compile("([\w\d_-]+)[\(]*([\w\d\s,]*)[\)]*") 
+    def variable(v):
+        # MS Excel encloses cells with punctuations in double quotes 
+        # and many people use Excel to prepare data
+        v = v.strip("\"")
+
+        parts = v.split(",", 1)
+        if len(parts) is 2:  # datatype specified?
+            name,dtype = parts
+            match = dtype_re.match(dtype)
+            if not match:
+                raise ParsingError("Error parsing variable header: %s" % v)
+            dtype_name,dtype_param = match.groups()
+            dtype_name = dtype_name.lower()
+        else:
+            name = parts[0]
+            dtype_name, dtype_param = None,None
+
+        vartypes = {
+            None: Variable,
+            'continuous': ContinuousVariable,
+            'discrete': DiscreteVariable,
+            'class': ClassVariable
+        }
         
-        match = metadata_re.match(line[1:])  # line[1:] to remove the %
-        if not match:
-            raise ParsingError("Error parsing metadata line: %s" % line)
+        return vartypes[dtype_name](name, dtype_param)
 
-        annotfor, name, datatype, values = match.groups()
-        annotfor = annotfor[:-1]  # remove the trailing period from annotfor
-        name = name.strip()
-        datatype = datatype.strip()
+    # -------------------------------------------------------------------------
 
-        try:
-            converter = bool_converter if datatype == 'bool' else eval(datatype) 
-        except NameError:
-            raise ParsingError(
-                "Invalid datatype (%s) for annotation (%s.%s)." % (datatype, annotfor, name)
-            )
-       
-        values = [v.strip() for v in re.split(',|\t', values)]
-        values = [converter(v) for v in values]
-
-        return (annotfor, name, values)
-    
-    # create array of variable or sample annotations
-    def annotations(annotation_type, metadata, length):
-        names = [m[1] for m in metadata]
-        values = [m[2] for m in metadata]
-
-        if 'id' not in names:
-            names.append('id')
-            values.append([str(i) for i in xrange(length)])
-
-        valuesets = unzip(values)  
-
-        return N.array([annotation_type(**dict((n,v) for n,v in zip(names, values))) for values in valuesets])
-
-    # -------------------------------------------------------------------------------------------------
-
-    # split on all known line seperators, then ignore blank and comment lines
+    # split on all known line seperators, ignoring blank and comment lines
     lines = (l.strip() for l in stringrep.splitlines() if l)
     lines = (l for l in lines if not l.startswith('#'))
-
-    # separate into metadata and data lines 
-    linetype = lambda line: 'metadata' if line.startswith('%') else 'data'
-    groupdict = dict((group, list(grouplines)) for group,grouplines in groupby(lines, linetype))
     
-    # parse metadata and data
-    metadata = [parse_metadata(l) for l in groupdict.get('metadata', [])]
-    data_ = N.array([[parse_dataitem(i) for i in l.split('\t')] for l in groupdict['data']])
-    # data_ is a 3D array where the inner dimension is over (values, missing, interventions)
-    # transpose(2,0,1) makes the inner dimension the outer one
-    observations, missing, interventions = data_.transpose(2,0,1)
+    # parse variable annotations (first non-comment line)
+    variables = lines.next().split(fieldsep)
+    variables = N.array([variable(v) for v in variables])
 
-    # create variable and sample annotations from the metadata
-    variables = annotations(Variable, [m for m in metadata if m[0] == 'variable'], observations.shape[1])
-    samples = annotations(Sample, [m for m in metadata if m[0] == 'sample'], observations.shape[0])
+    # split data into cells
+    d = [[c for c in row.split(fieldsep)] for row in lines]
+
+    # does file contain sample names?
+    samplenames = True if len(d[0]) == len(variables) + 1 else False
+    samples = None
+    if samplenames:
+        samples = N.array([Sample(row[0]) for row in d])
+        d = [row[1:] for row in d]
+    
+    # parse data lines and separate into 3 numpy arrays
+    #    d is a 3D array where the inner dimension is over 
+    #    (values, missing, interventions) transpose(2,0,1) makes the inner
+    #    dimension the outer one
+    d = N.array([[dataitem(c,v) for c,v in zip(row,variables)] for row in d]) 
+    obs, missing, interventions = d.transpose(2,0,1)
 
     # pack observations into bytes if possible (they're integers and < 255)
-    observations_dtype = 'byte' if (observations.dtype.kind is 'i' and observations.max() < 255) \
-                                else observations.dtype
-   
+    dtype = 'byte' if (obs.dtype.kind is 'i' and obs.max() < 255) else obs.dtype
+    
     # x.astype() returns a casted *copy* of x
     # returning copies of observations, missing and interventions ensures that
     # they're contiguous in memory (should speedup future calculations)
-    return PeblData(
-        observations.astype(observations_dtype),
+    return Dataset(
+        obs.astype(dtype),
         missing.astype(bool),
         interventions.astype(bool), 
         variables, 
-        samples
+        samples,
     )
 
+# TODO: test
+def fromconfig():
+    fname = config.get('data.filename')
+    text = config.get('data.text')
+    if text:
+        data_ = fromstring(text)
+    else:
+        if not fname:
+            raise Exception("Filename (nor text) for dataset not specified.")
+        data_ = fromfile(fname)
 
-# This implementation calculates bin edges by trying to make bins equal sized.. 
-# 
-# input:  [3,7,4,4,4,5]
-# output: [0,1,0,0,0,1]
-#
-# Note: All 4s discretize to 0.. which makes bin sizes unequal..                                                 
-def discretize_variables(data_, includevars=None, excludevars=[], numbins=3):
-    newdata = copy.deepcopy(data_)
-    binsize = newdata.samples.size//numbins
-
-    includevars = ensure_list(includevars or range(newdata.variables.size))
-    includevars = [var for var in includevars if var not in excludevars]
-    for var in includevars:
-        col = newdata.observations[:,var]
-        argsorted = col.argsort()
-        binedges = [col[argsorted[binsize*b - 1]] for b in range(numbins)][1:]
-        newdata.observations[:,var] = N.searchsorted(binedges, col)
-        newdata.variables[var].arity = numbins
-
-    # if discretized all variables, then cast observations to byte or int
-    if len(includevars) == newdata.variables.size:
-        obstype = 'byte' if newdata.observations.max() < 255 else 'int'
-        newdata.observations = newdata.observations.astype(obstype)
+    numbins = config.get('data.discretize')
+    if numbins > 0:
+        data.discretize(numbins=numbins)
     
-    return newdata
+    return data_
 
 
-def discretize_variables_in_groups(data_, samplegroups, includevars=None, excludevars=[], numbins=3):
-    newdata = copy.deepcopy(data_)
-
-    includevars = ensure_list(includevars or range(newdata.variables.size))
+def combine(datasets, axis=None):
+    """axis should be 'samples', or 'variables' """
     
-    # discretize data in sample groups
-    for samplegroup in samplegroups:
-        discdata = discretize_variables(newdata.subset(samples=samplegroup), 
-                                        includevars, excludevars, numbins)
-        newdata.observations[samplegroup] = discdata.observations
+    if axis == 'variables':
+        variables = flatten(d.variables for d in datasets)
+        samples = datasets[0].samples
+        stacker = N.hstack
+    else:
+        samples = flatten(d.samples for d in datasets)
+        variables = datasets[0].variables
+        stacker = N.vstack
 
-    # set the arity to the number of bins requested
-    for v in newdata.variables:
-        v.arity = numbins
-    
-    # if discretized all variables, then cast observations to byte or int
-    if len(includevars) == newdata.variables.size:
-        obstype = 'byte' if newdata.observations.max() < 255 else 'int'
-        newdata.observations = newdata.observations.astype(obstype)
+    missing = stacker(tuple(d.missing for d in datasets))
+    interventions = stacker(tuple(d.interventions for d in datasets))
+    observations = stacker(tuple(d.observations for d in datasets))
 
-    return newdata
+    return Dataset(observations, missing, interventions, variables, samples)
+
 

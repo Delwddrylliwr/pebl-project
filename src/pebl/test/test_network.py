@@ -1,8 +1,10 @@
 import os
 import numpy as N
-from pebl import network, data
-from pebl.test import datadir
+from pebl import network, data, config
 
+#
+# Testing edgelists (working with edges)
+#
 class TestSparseEdgeList:
     # Which class of edgelist to use
     edgelist_class = network.SparseEdgeList
@@ -83,40 +85,61 @@ class TestMatrixEdgeList(TestSparseEdgeList):
     # Which class of edgelist to use
     edgelist_class = network.MatrixEdgeList
 
-class TestNetwork:
+
+#
+# Testing cyclecheckers
+#
+class TestDFSCyclechecker:
+    cyclechecker = 'dfs'
+
     def setUp(self):
-        self.net = network.Network([data.Variable(id=i, arity=3) for i in xrange(6)])
+        config.set('network.cyclechecker', self.cyclechecker)
+        self.net = network.Network([data.DiscreteVariable(i,3) for i in xrange(6)])
         for edge in [(0,1), (0,3), (1,2)]:
             self.net.edges.add(edge)
-
-    def test_loopchecking_on_acyclic_net1(self):
-        assert self.net.is_acyclic(), "Network is acyclic."
-
-    def test_loopchecking_on_acyclic_net2(self):
-        assert self.net.is_acyclic__eigval_implementation(), "Network is acyclic."
-
-    def test_loopchecking_on_acyclic_net3(self):
-        assert self.net.is_acyclic__dfs_implementation(), "Network is acyclic."
-
-    def test_loopchecking_on_cyclic_net1(self):
-        self.net.edges.add((2,0))
-        assert not self.net.is_acyclic(), "Network should be cyclic."
-
-    def test_loopchecking_on_cyclic_net2(self):
-        self.net.edges.add((2,0))
-        assert not self.net.is_acyclic__eigval_implementation(), "Network should be cyclic."
     
-    def test_loopchecking_on_cyclic_net3(self):
+    def test_correct_implementation(self):
+        assert self.net.is_acyclic.__class__ == self.net.cyclecheckers[self.cyclechecker]
+
+    def test_loopchecking(self):
+        assert self.net.is_acyclic(), "Should be acyclic"
+
+    def test_loopchecking2(self):
         self.net.edges.add((2,0))
-        assert not self.net.is_acyclic__dfs_implementation(), "Network should be cyclic."
+        assert not self.net.is_acyclic(), "Should not be acyclic"
     
+class TestEigenvalueCyclechecker(TestDFSCyclechecker):
+    cyclechecker = 'eigenvalue'
+
+#
+# Testing randomizers
+#
+class TestNaiveRandomizer:
+    randomizer = 'naive'
+
+    def setUp(self):
+        config.set('network.randomizer', self.randomizer)
+        self.net = network.Network([data.DiscreteVariable(i,3) for i in xrange(6)])
+
+    def test_correct_implementation(self):
+        assert self.net.randomize.__class__ == self.net.randomizers[self.randomizer]
+
     def test_randomize(self):
         self.net.randomize()
-        assert self.net.is_acyclic(), "Random network should be acyclic."
+        assert self.net.is_acyclic(), "Random network should be acyclic"
 
-    def test_randomize2(self):
-        self.net.randomize__naive_implementation()
-        assert self.net.is_acyclic(), "Random network should be acyclic."
+
+#
+# Testing network features (misc methods)
+#
+class TestNetwork:
+    expected_dotstring = """digraph G {\n\t"0";\n\t"1";\n\t"2";\n\t"3";\n\t"4";\n\t"5";\n\t"0" -> "1";\n\t"0" -> "3";\n\t"1" -> "2";\n}"""
+    expected_string = '0,1;0,3;1,2'
+
+    def setUp(self):
+        self.net = network.Network([data.DiscreteVariable(i,3) for i in xrange(6)])
+        for edge in [(0,1), (0,3), (1,2)]:
+            self.net.edges.add(edge)
 
     def test_as_pydot(self):
         assert len(self.net.as_pydot().edge_list) == 3, "Can convert to pydot graph instance."
@@ -131,24 +154,63 @@ class TestNetwork:
         
         assert file_exists, "Can create image file."
 
-class NetworkFromListOfEdges:
+    def test_as_dotstring(self):
+        assert self.net.as_dotstring() == self.expected_dotstring, "Create dot-formatted string"
+
+    def test_as_dotfile(self):
+        self.net.as_dotfile('testdotfile.txt')
+        assert open('testdotfile.txt').read() == self.expected_dotstring, "Create dotfile."
+
+    def test_as_string(self):
+        assert self.net.as_string() == self.expected_string, "Create string representation."
+
+    def test_layout(self):
+        """net.layout() should either raise an exception or do the layout."""
+
+        try:
+            self.net.layout()
+        except:
+            return
+
+        assert hasattr(self.net, 'node_positions'), "Has node_positions"
+        assert len(self.net.node_positions[0]) == 2, "Node positions are 2 values (x and y)"
+        assert isinstance(self.net.node_positions[0][0], (int, float)), "Positions are in floats or ints"
+
+
+#
+# Test constructor and factory funcs
+#
+class TestNetworkFromListOfEdges:
     def setUp(self):
-        self.net = network.Netork(
-            nodes = network.Network([data.Variable(id=i, arity=3) for i in xrange(6)]),
-            edges = [(0,1), (4,5), (2,3)]
+        self.net = network.Network(
+            [data.DiscreteVariable(str(i),3) for i in xrange(6)],
+            [(0,1), (4,5), (2,3)]
         )
 
     def test_number_of_edges(self):
         assert len(list(self.net.edges)) == 3
 
-class NetworkFromMatrixEdgeList(NetworkFromListOfEdges):
+    def test_edges_exist(self):
+        assert (0,1) in self.net.edges and \
+               (4,5) in self.net.edges and \
+               (2,3) in self.net.edges
+
+class TestNetworkFromMatrixEdgeList(TestNetworkFromListOfEdges):
     def setUp(self):
         edges = [(0,1), (4,5), (2,3)]
         medgelist = network.MatrixEdgeList(num_nodes=6)
         medgelist.add_many(edges)
 
-        self.net = network.Netork(
-            nodes = network.Network([data.Variable(id=i, arity=3) for i in xrange(6)]),
-            edges = medgelist
+        self.net = network.Network(
+            [data.DiscreteVariable(str(i), 3) for i in xrange(6)],
+            medgelist
         )
+
+class TestNetworkFromString(TestNetworkFromListOfEdges):
+    def setUp(self):
+        self.net = network.Network(
+            [data.DiscreteVariable(str(i),3) for i in xrange(6)],
+            "0,1;4,5;2,3"
+        )
+
 

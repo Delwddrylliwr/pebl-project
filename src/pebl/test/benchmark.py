@@ -4,7 +4,7 @@ sys.path.insert(0, "../")
 
 import os, os.path
 import data, network
-from learners import greedy
+from learner import greedy
 
 def benchmark_datafiles(dir=None):
     benchdata_dir = dir or os.path.join(os.path.dirname(__file__), "benchdata")
