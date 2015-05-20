@@ -5,7 +5,8 @@ import random
 
 import numpy as N
 
-from pebl import data, cpd, prior, config, network
+#from pebl import data, cpd, prior, config, network
+from pebl import data, cpd, parcplx, config, network
 from pebl.util import *
 
 N.random.seed()
@@ -59,7 +60,11 @@ class LocalscoreCache(object):
             score = _cache[index]
             self.hits += 1
         except KeyError:
-            score = _cache[index] = self.neteval._cpd(node, parents).loglikelihood()
+            # @TODO add to the loglikelihood here a local penalty based on the local complexity
+            #score = _cache[index] = self.neteval._cpd(node, parents).loglikelihood()
+            score = _cache[index] = ( self.neteval._cpd(node, parents).loglikelihood() 
+            	+ self.neteval._parcplx(node, parents).complexity() 
+            	)
             self.misses += 1
 
         # if using LRU cache (maxsize != -1)
@@ -100,11 +105,12 @@ class NetworkEvaluator(object):
     
     """
 
-    def __init__(self, data_, network_, prior_=None, localscore_cache=None):
+    def __init__(self, data_, network_=None, localscore_cache=None):
+    #def __init__(self, data_, network_, prior_=None, localscore_cache=None):
 
         self.network = network_
         self.data = data_
-        self.prior = prior_ or prior.NullPrior()
+        #self.prior = prior_ or prior.NullPrior()
         
         self.datavars = range(self.data.variables.size)
         self.score = None
@@ -115,8 +121,12 @@ class NetworkEvaluator(object):
     # Private Interface
     # 
     def _globalscore(self, localscores):
+    	# now, the decomposable global score is simply the sum of local scores from above:
+    	# SCORE(G|D) = sum_i=1->m log[ P_max (D_i | D_G(i)) / sum_D'_i P_max (D'_i | D_G(i)) ]
+    	# where D_S is a subset of data specific to nodes S, and G(i) is the parent-set of node i
+    	return N.sum(localscores)
         # log(P(M|D)) +  log(P(M)) == likelihood + prior
-        return N.sum(localscores) + self.prior.loglikelihood(self.network)
+        #return N.sum(localscores) + self.prior.loglikelihood(self.network)
     
     def _cpd(self, node, parents):
         #return cpd.MultinomialCPD(
@@ -171,7 +181,8 @@ class NetworkEvaluator(object):
 
 
 class SmartNetworkEvaluator(NetworkEvaluator):
-    def __init__(self, data_, network_, prior_=None, localscore_cache=None):
+    #def __init__(self, data_, network_, prior_=None, localscore_cache=None):
+    def __init__(self, data_, network_=None, localscore_cache=None):
         """Create a 'smart' network evaluator.
 
         This network evaluator eliminates redundant computation by keeping
@@ -189,8 +200,8 @@ class SmartNetworkEvaluator(NetworkEvaluator):
 
         """
 
-        super(SmartNetworkEvaluator, self).__init__(data_, network_, prior_, 
-                                                    localscore_cache)
+        #super(SmartNetworkEvaluator, self).__init__(data_, network_, prior_, localscore_cache)
+	super(SmartNetworkEvaluator, self).__init__(data_, network_, localscore_cache)
 
         # can't use this with missing data
         #if self.data.missing.any():
@@ -371,8 +382,8 @@ class MissingDataNetworkEvaluator(SmartNetworkEvaluator):
         )
     )
 
-    def __init__(self, data_, network_, prior_=None, localscore_cache=None, 
-                 **options): 
+    #def __init__(self, data_, network_, prior_=None, localscore_cache=None, **options):
+    def __init__(self, data_, network_=None, localscore_cache=None, **options): 
         """Create a network evaluator for use with missing values.
 
         This evaluator uses a Gibb's sampler for sampling over the space of
@@ -390,8 +401,8 @@ class MissingDataNetworkEvaluator(SmartNetworkEvaluator):
 
         """
 
-        super(MissingDataNetworkEvaluator, self).__init__(data_, network_,
-                                                         prior_)
+        #super(MissingDataNetworkEvaluator, self).__init__(data_, network_, prior_)
+        super(MissingDataNetworkEvaluator, self).__init__(data_, network_)
         self._localscore = None  # no cache w/ missing data
         config.setparams(self, options)
         
@@ -718,7 +729,8 @@ _missingdata_evaluators = {
     'maxentropy_gibbs': MissingDataMaximumEntropyNetworkEvaluator
 }
 
-def fromconfig(data_=None, network_=None, prior_=None):
+#def fromconfig(data_=None, network_=None, prior_=None):
+def fromconfig(data_=None, network_=None):
     """Create an evaluator based on configuration parameters.
     
     This function will return the correct evaluator based on the relevant
@@ -728,11 +740,13 @@ def fromconfig(data_=None, network_=None, prior_=None):
 
     data_ = data_ or data.fromconfig()
     network_ = network_ or network.fromdata(data_)
-    prior_ = prior_ or prior.fromconfig()
+    #prior_ = prior_ or prior.fromconfig()
 
     if data_.missing.any():
         e = _missingdata_evaluators[config.get('evaluator.missingdata_evaluator')]
-        return e(data_, network_, prior_)
+        #return e(data_, network_, prior_)
+        return e(data_, network_)
     else:
-        return SmartNetworkEvaluator(data_, network_, prior_)
+        #return SmartNetworkEvaluator(data_, network_, prior_)
+        return SmartNetworkEvaluator(data_, network_)
 
