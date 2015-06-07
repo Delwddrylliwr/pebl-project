@@ -135,7 +135,10 @@ class NetworkEvaluator(object):
                 #N.where(self.data.interventions[:,node] == False)[0])) 
         return cpd.MultinomialCPD(
             self.data._subset_ni_fast([node] + parents))
-
+            
+    def _cplx(self, node, parents):
+        return parcplx.complexity(
+            self.data._subset_ni_fast([node] + parents))
 
     def _score_network_core(self):
         # in this implementation, we score all nodes (even if that means

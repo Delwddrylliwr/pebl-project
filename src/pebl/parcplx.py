@@ -1,8 +1,7 @@
 """Classes for fNML local complexity penalty"""
 
 import math
-from itertools import izip
-
+import itertools
 import numpy as N
 
 try:
@@ -14,13 +13,12 @@ except:
 # Complexity Penalty classes
 #
 class ParCplx(object):
-    """Conditional probability distributions.
+    """Parametric complexity.
     
     @TODO both a pure-python and a fast C implementation. The C implementation will be
     used if available.
     
     """
-# @TODO: replace the references to data with only the necessaery arities...
     def __init__(self, data_):
         """Create a CPD.
         data_ should only contain data for the nodes involved in this CPD. The
@@ -32,83 +30,70 @@ class ParCplx(object):
             d.subset([child] + n.edges.parents(child))
         """
 
-    def loglikelihood(self):
-        """Calculates the loglikelihood of the data.
-        This method implements the log of the g function (equation 12) from:
-        Cooper, Herskovitz. A Bayesian Method for the Induction of
-        Probabilistic Networks from Data.
+    def complexity(self):
+        """Calculates the parametric complexity for the bayesian network, 
+        in line with factorised normalised maximum likelihood.
         
         """ 
         pass
 
-    def replace_data(self, oldrow, newrow):
-        """Replaces a data row with a new one.
-        
-        Missing values are handled using some form of sampling over the
-        possible values and this requires making small changes to the data.
-        Instead of recreating a CPD after every change, it's far more efficient
-        to simply make a small change in the CPD.
-        """
-        pass
 
-
-class MultinomialCplx_Py(CPD):
-    """Pure python implementation of Multinomial Parametric Complexity.
+class Cplx_Py(ParCplx):
+    """Pure python implementation of Parametric Complexity.
+    
+       Because the multinomial parametric complexity is calculated iteratively, 
+       we need to run this once on initialisation, to build a table of multinomial
+       complexities, and then return the suitable one
     """
 
-    # cache shared by all instances
-    lnfactorial_cache = N.array([])
+    # caches shared by all instances
+    factorial_cache = N.array([[]])
+    multinomial_cache = N.array([[]])
 
     def __init__(self, data_):
         self.data = data_
         arities = [v.arity for v in data_.variables]
 
-        # ensure that there won't be a cache miss
-        maxcount = data_.samples.size + max(arities)
-        if len(self.__class__.lnfactorial_cache) < maxcount:
-            self._prefill_lnfactorial_cache(maxcount)
+        # ensure that there won't be a cache miss when using the global table
+        #of multinomial complexities, by finding the biggest sample size needed
+        #...construct an ordering of the possible combinations of values
+        #for the parents...
+        #first, create a list of the unique values for each variable
+        def uniquify_sort(seq):
+            set = {}
+            map(set.__setitem, seq, [])
+            return set.keys().sort
+        possible_values = map(uniquify, data.observations)
+        #now construct a list of all combinations of possible values for 
+        #each variable
+        list_product = list(itertools.product(possible_values))
         
-        # create a Conditional Probability Table (cpt)
-        qi = int(N.product(arities[1:]))
-        self.counts = N.zeros((qi, arities[0] + 1), dtype=int)
+        #we now need the frequency with which each of these combinations appears
+        #in the data
+#        def combination_freq(seq):
+#            return data.observations.count(seq)
+#        sample_sizes = map(combination_freq, list_product)
+        sample_sizes = map(data.observations.count, list_product)
         
-        if data_.variables.size == 1:
-            self.offsets = N.array([0])
-        else:
-            multipliers = N.concatenate(([1], arities[1:-1]))
-            offsets = N.multiply.accumulate(multipliers)
-            self.offsets = N.concatenate(([0], offsets))
-
-        # add data to cpt
-        self._change_counts(data_.observations, 1)
+        #finally we'll check if we already have enough complexities cached
+        if ( len(self.__class__.multinomial_cache) < arities[0] 
+        or len(self.__class__.multinomial_cache[0]) < max(sample_sizes) ):
+            self._prefill_factorial_cache(maxcount)
 
 
     #
     # Public methods
     #
-    def replace_data(self, oldrow, newrow):
-        add_index = sum(i*o for i,o in izip(newrow, self.offsets))
-        remove_index = sum(i*o for i,o in izip(oldrow, self.offsets))
-
-        self.counts[add_index][newrow[0]] += 1
-        self.counts[add_index][-1] += 1
-
-        self.counts[remove_index][oldrow[0]] -= 1
-        self.counts[remove_index][-1] -= 1
-
-
-    def loglikelihood(self):
-        lnfac = self.lnfactorial_cache
-        counts = self.counts
-
-        ri = self.data.variables[0].arity
-        part1 = lnfac[ri-1]
-
-        result = N.sum( 
-              part1                                 # log((ri-1)!) 
-            - lnfac[counts[:,-1] + ri -1]           # log((Nij + ri -1)!)
-            + N.sum(lnfac[counts[:,:-1]], axis=1)   # log(Product(Nijk!))
-        )
+    def complexity(self):
+        mn_cplx = self.multinomial_cache
+        
+        num_parents = length(self.data.variables)
+        
+        #now we want the log-multinomial complexity for each of these observed 
+        #combinations
+        def observed_complexity(freq):
+            return mn_cplx[arity-1][freq]
+        result = N.sum(N.log(map(observed_complexity, sample_sizes)))
 
         return result
 
@@ -123,45 +108,78 @@ class MultinomialCplx_Py(CPD):
             self.counts[j,k] += change
             self.counts[j,-1] += change
 
-    def _prefill_lnfactorial_cache(self, size):
+    def _prefill_multinomial_cache(self, sample_size, arity):
+        #we want to preserve the existing complexities, and only calculate new
+        mn_cache = self.__class__.multinomial_cache
+        
+        #we'll need factorials up to the sample size
+        # ensure that there won't be a cache miss
+        if len(self.__class__.factorial_cache) < sample_size:
+            self._prefill_factorial_cache(sample_size)
+    
+        #c^1_n is 1 for all n
+        for n in range(len(mn_cache[1]), sample_size):
+            mn_cache[0][n] = 1
+        
+        #c^2_n is more complex
+        for n in range(len(mn_cache[1]), sample_size):
+            def complexity_term(h):
+                fctl = __class__.factorial_cache
+                return (fctl[n] / (fctl[h] * fctl[n-h])) * pow(h/n, h) * pow((n-h)/n, n-h)
+            mn_cache[1][n] = N.add.accumulate(map(complexity_term, range(0, n)))
+        
+        #each existing arity needs bringing up to sample size
+        for r in range(2, len(mn_cache)):
+            for n in range(len(mn_cache[r]), sample_size):
+                #because r = arity-1, arity - 2 = r-1...
+                mn_cache[r][n] = mn_cache[r-1][n] + ( n / (r-1)) * mn_cache[r-2][n]
+        
+        #finally, each new arity needs constructing from scratch
+        for r in range(len(mn_cache), arity + 1):
+            mn_cache[r][0] = 1
+            
+            for n in range(1, sample_size):
+                #because r = arity-1, arity - 2 = r-1...
+                mn_cache[r][n] = mn_cache[r-1][n] + ( n / (r-1)) * mn_cache[r-2][n]
+
+        
+    def _prefill_factorial_cache(self, size):
         # logs = log(x) for x in [0, 1, 2, ..., size+10]
         #    * EXCEPT, log(0) = 0 instead of -inf.
-        logs = N.concatenate(([0.0], N.log(N.arange(1, size+10, dtype=float))))
+        numbers = N.concatenate(([0.0], N.arange(1, size+10, dtype=float)))
 
         # add.accumulate does running sums..
-        self.__class__.lnfactorial_cache = N.add.accumulate(logs)
+        self.__class__.factorial_cache = N.multiply.accumulate(numbers)
 
 
-class MultinomialCPD_C(MultinomialCPD_Py):
-    """C implementation of Multinomial cpd."""
-
-    def __init__(self, data_):
-        if not _cpd:
-            raise Exception("_cpd C extension module not loaded.")
-
-        self.data = data_
-        arities = [v.arity for v in data_.variables]
-        num_parents = len(arities)-1
-
-        # ensure that there won't be a cache miss
-        maxcount = data_.samples.size + max(arities)
-        if len(self.__class__.lnfactorial_cache) < maxcount:
-            self._prefill_lnfactorial_cache(maxcount)
-        
-        self.__cpt = _cpd.buildcpt(data_.observations, arities, num_parents)
-
-    def loglikelihood(self):
-        return _cpd.loglikelihood(self.__cpt, self.lnfactorial_cache)
-
-    def replace_data(self, oldrow, newrow):
-        _cpd.replace_data(self.__cpt, oldrow, newrow)
-
-    def __del__(self):
-        _cpd.dealloc_cpt(self.__cpt)
-
-
-# use the C implementation if possible, else the python one
-MultinomialCPD = MultinomialCPD_C if _cpd else MultinomialCPD_Py
-Status API Training Shop Blog About
-© 2015 GitHub, Inc. Terms Privacy Security Contact
+#class Cplx_C(MultinomialCPD_Py):
+#    """C implementation of parametric complexity."""
+#
+#    def __init__(self, data_):
+#        if not _cpd:
+#            raise Exception("_cpd C extension module not loaded.")
+#
+#        self.data = data_
+#        arities = [v.arity for v in data_.variables]
+#        num_parents = len(arities)-1
+#
+#        # ensure that there won't be a cache miss
+#        maxcount = data_.samples.size + max(arities)
+#        if len(self.__class__.lnfactorial_cache) < maxcount:
+#            self._prefill_lnfactorial_cache(maxcount)
+#        
+#        self.__cpt = _cpd.buildcpt(data_.observations, arities, num_parents)
+#
+#    def loglikelihood(self):
+#        return _cpd.loglikelihood(self.__cpt, self.lnfactorial_cache)
+#
+#    def replace_data(self, oldrow, newrow):
+#        _cpd.replace_data(self.__cpt, oldrow, newrow)
+#
+#    def __del__(self):
+#        _cpd.dealloc_cpt(self.__cpt)
+#
+#
+## use the C implementation if possible, else the python one
+#MultinomialCPD = MultinomialCPD_C if _cpd else MultinomialCPD_Py
 
