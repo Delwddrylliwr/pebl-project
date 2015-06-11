@@ -60,7 +60,7 @@ class LocalscoreCache(object):
             score = _cache[index]
             self.hits += 1
         except KeyError:
-            # @TODO add to the loglikelihood here a local penalty based on the local complexity
+            # add to the loglikelihood here a local penalty based on the local complexity
             #score = _cache[index] = self.neteval._cpd(node, parents).loglikelihood()
             score = _cache[index] = ( self.neteval._cpd(node, parents).loglikelihood() 
             	+ self.neteval._parcplx(node, parents).complexity() 
@@ -137,7 +137,7 @@ class NetworkEvaluator(object):
             self.data._subset_ni_fast([node] + parents))
             
     def _cplx(self, node, parents):
-        return parcplx.complexity(
+        return parcplx.Cplx(
             self.data._subset_ni_fast([node] + parents))
 
     def _score_network_core(self):

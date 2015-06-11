@@ -178,8 +178,8 @@ class Cplx_Py(ParCplx):
 #
 #    def __del__(self):
 #        _cpd.dealloc_cpt(self.__cpt)
-#
-#
-## use the C implementation if possible, else the python one
-#MultinomialCPD = MultinomialCPD_C if _cpd else MultinomialCPD_Py
+
+
+# use the C implementation if possible, else the python one
+Cplx = Cplx_C if _parcplx else Cplx_Py
 
